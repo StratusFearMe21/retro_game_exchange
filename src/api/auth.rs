@@ -165,9 +165,7 @@ impl FromRequestParts<Pool> for User {
         state: &Pool,
     ) -> Result<Self, Self::Rejection> {
         <User as OptionalFromRequestParts<Pool>>::from_request_parts(parts, state)
-            .await
-            .ok()
-            .flatten()
+            .await?
             .ok_or_else(|| eyre!("Your user wasn't found"))
             .with_status_code(StatusCode::UNAUTHORIZED, HtmlOrJsonHeader::Json)
     }
