@@ -1,0 +1,7 @@
+ALTER TABLE games ADD COLUMN owned_by INT NOT NULL;
+
+ALTER TABLE games
+ADD CONSTRAINT owned_by_fk
+FOREIGN KEY (owned_by)
+REFERENCES users (id)
+ON DELETE CASCADE;

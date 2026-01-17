@@ -1,0 +1,24 @@
+<div id="error" hx-swap-oob="true">
+  <h2>Error</h2>
+  <ol>
+    <% for error in self.error.chain() { %>
+      <li><%= error | disp %></li>
+    <% } %>
+  </ol>
+  <h3>Spantrace</h3>
+  <% let handler: &color_eyre::Handler = self.error.handler().downcast_ref().unwrap(); handler.span_trace().unwrap().with_spans(|span, fields| { let mut result = || { %>
+    <details>
+      <summary>
+        <code><%= span.module_path().unwrap_or_default() %>::<%= span.name() %></code>
+        <% if let Some((file, line)) = span.file().and_then(|f| Some((f, span.line().unwrap_or(0)))) { %>
+          at <code><%= file %>:<%= line %></code>
+        <% } %>
+      </summary>
+      <% if !fields.is_empty() { %>
+          <p>with <code><%= fields %></code></p>
+      <% } %>
+    </details>
+  <% Ok::<_, __sf_rt::RenderError>(())}; if result().is_err() { %>
+  Failed to render part of the error
+  <% } true}); %>
+</div>

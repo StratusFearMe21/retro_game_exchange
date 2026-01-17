@@ -1,0 +1,50 @@
+{
+  "name": "posthtml-lucide",
+  "description": "PostHTML plugin for pulling in Lucide icons",
+  "version": "0.0.0",
+  "license": "MIT",
+  "author": "PostHTML (https://github.com/posthtml)",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "main": "dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "dev": "vitest",
+    "release": "npx np",
+    "build": "unbuild",
+    "prepare": "unbuild",
+    "prepack": "unbuild",
+    "lint": "biome lint ./lib ./test",
+    "pretest": "npm run lint",
+    "test": "vitest run --coverage"
+  },
+  "keywords": [
+    "html",
+    "posthtml",
+    "posthtml-plugin"
+  ],
+  "devDependencies": {
+    "@biomejs/biome": "2.2.6",
+    "@vitest/coverage-v8": "^3.2.4",
+    "posthtml": "^0.16.7",
+    "unbuild": "^2.0.0",
+    "vitest": "^3.0.8"
+  },
+  "dependencies": {
+    "change-case": "^5.4.4",
+    "lucide": "^0.556.0",
+    "lucide-static": "^0.556.0",
+    "posthtml-parser": "^0.12.1"
+  }
+}

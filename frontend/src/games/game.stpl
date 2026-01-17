@@ -1,0 +1,95 @@
+<article id="game-<%= game.id %>">
+  <header>
+    <nav>
+      <ul>
+        <li>
+          <% if editing { %>
+            <form class="game-<%= game.id %>-input">
+              <input
+                id="game-<%= game.id %>-name"
+                name="name"
+                placeholder="Name"
+                value="<%= game.name %>"
+              />
+            </form>
+          <% } else { %>
+            <strong><%= game.name %></strong>
+          <% } %>
+        </li>
+      </ul>
+      <ul hx-target="#game-<%= game.id %>" hx-swap="outerHTML">
+        <% if game.user.id == user_id { %>
+          <% if game.id == 0 { %>
+            <li><a hx-target="#games" hx-include=".game-<%= game.id %>-input" hx-post="/games"><i data-lucide="plus" /></a></li>
+          <% } else if editing { %>
+            <li><a hx-include=".game-<%= game.id %>-input" hx-put="/games/<%= game.id %>"><i data-lucide="check" /></a></li>
+          <% } else { %>
+            <li><a hx-delete="/games/<%= game.id %>"><i data-lucide="trash" /></a></li>
+            <li><a hx-get="/games/<%= game.id %>?edit=true"><i data-lucide="pencil" /></a></li>
+          <% } %>
+        <% } %>
+      </ul>
+    </nav>
+  </header>
+  <form id="game-<%= game.id %>-form" class="game-<%= game.id %>-input">
+    <fieldset>
+      <label>
+        Condition
+        <select
+          name="condition"
+          aria-label="Condition"
+          __prop__="<% if !editing { %>disabled<% } %>"
+          required>
+            <option
+              __prop__="<% if game.condition == None { %>selected<% } %>"
+              disabled
+              value="">Select</option>
+            <option
+              __prop__="<% if game.condition == Some(Condition::Mint) { %>selected<% } %>"
+              value="Mint">Mint</option>
+            <option
+              __prop__="<% if game.condition == Some(Condition::Good) { %>selected<% } %>"
+              value="Good">Good</option>
+            <option
+              __prop__="<% if game.condition == Some(Condition::Fair) { %>selected<% } %>"
+              value="Fair">Fair</option>
+            <option
+              __prop__="<% if game.condition == Some(Condition::Poor) { %>selected<% } %>"
+              value="Poor">Poor</option>
+        </select>
+      </label>
+      <label>
+        Platform
+        <input
+          name="platform"
+          placeholder="Platform"
+          value="<%= game.platform.unwrap_or_default() %>"
+          __prop__="<% if !editing { %>readonly<% } %>"
+        />
+      </label>
+      <label>
+        Publisher
+        <input
+          name="publisher"
+          placeholder="Publisher"
+          value="<%= game.publisher.unwrap_or_default() %>"
+          __prop__="<% if !editing { %>readonly<% } %>"
+        />
+      </label>
+      <label>
+        Year
+        <input
+          type="number"
+          step="1"
+          name="year"
+          placeholder="Year"
+          value="<% if let Some(year) = game.year { %><%= year %><% } %>"
+          __prop__="<% if !editing { %>readonly<% } %>"
+        />
+      </label>
+    </fieldset>
+  </form>
+  <% if game.id != 0 { %>
+    <footer>Owned by <%= game.user.username %></footer>
+  <% } %>
+</article>

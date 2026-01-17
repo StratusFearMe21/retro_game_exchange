@@ -1,0 +1,12 @@
+@use "@picocss/pico/scss/pico" as pico;
+@use "sass:map";
+
+.grid {
+  @if map.get(pico.$breakpoints, "md") {
+    @media (min-width: map.get(map.get(pico.$breakpoints, "md"), "breakpoint")) {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+
+  /* grid-template-rows: repeat(5, 1fr); */
+}

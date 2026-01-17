@@ -1,0 +1,51 @@
+services:
+
+  db:
+    volumes:
+      # PGDATA directory is persisted between restarts
+      - pgdata:/var/lib/postgresql
+      - ./docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:Z
+    image: postgres
+    restart: always
+    # set shared memory limit when using docker compose
+    shm_size: 128mb
+    # or set shared memory limit when deploy via swarm stack
+    #volumes:
+    #  - type: tmpfs
+    #    target: /dev/shm
+    #    tmpfs:
+    #      size: 134217728 # 128*2^20 bytes = 128Mb
+    healthcheck:
+      test:
+        [
+        "CMD",
+        "pg_isready",
+        "-U",
+        "postgres",
+        "-h",
+        "localhost"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    environment:
+      POSTGRES_PASSWORD: example
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+     
+
+  retro_game_exchange:
+    restart: unless-stopped
+    ports:
+      - 3000:3000
+    depends_on:
+      db:
+        condition: service_healthy
+    build:
+      context: .
+    environment:
+      DATABASE_URL: postgres://docker:example@db/docker
+
+volumes:
+  pgdata:
+
