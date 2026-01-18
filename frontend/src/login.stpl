@@ -3,7 +3,7 @@
     <nav>
       <ul>
         <% if editing { %>
-          <form id="user-edit" method="POST" action="/auth/patchlogin">
+          <form id="user-edit" hx-patch="/auth/login">
             <input 
               name="username"
               placeholder="Username"
@@ -28,14 +28,14 @@
         <% } %>
       </ul>
       <ul hx-swap="outerHTML" hx-target="#login">
-        <li><a href="/auth/logout">Logout</a></li>
+        <li><a hx-get="/auth/logout">Logout</a></li>
         <% if !editing { %>
           <li><a hx-get="/auth/login?edit=true"><i data-lucide="pencil" /></a></li>
         <% } %>
       </ul>
     </nav>
   <% } else { %>
-    <form method="POST">
+    <form>
       <fieldset class="grid">
         <input 
           name="username"
@@ -53,13 +53,13 @@
         <div role="group">
           <input
             type="submit"
+            hx-post="/auth/login"
             value="Log in"
-            formaction="/auth/login"
           />
           <input
             type="submit"
+            hx-post="/auth/signup"
             value="Sign up"
-            formaction="/auth/signup"
           />
         </div>
       </fieldset>

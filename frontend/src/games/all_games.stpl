@@ -1,4 +1,4 @@
-<div class="grid" id="games">
+<div class="grid game-grid" id="games">
   <% let editing = true; let user_id = 0; let game = GameModel::default(); %>
   <% include!("./game.stpl"); %>
   <% let editing = false; let user_id = self.user_id; %>

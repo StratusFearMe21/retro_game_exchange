@@ -1,7 +1,7 @@
 use axum::{
     extract::{FromRequestParts, OptionalFromRequestParts, Query},
     http::StatusCode,
-    response::{Html, Redirect},
+    response::Html,
 };
 use axum_extra::{
     TypedHeader,
@@ -33,6 +33,7 @@ use crate::{
     api::auth::pool::DatabaseConnection,
     error::{self, Error, WithStatusCode},
     html_or_json::HtmlOrJsonHeader,
+    htmx::HxRefresh,
     json_or_form::JsonOrForm,
     openapi_template,
     schema::users,
@@ -354,7 +355,7 @@ pub async fn signup(
     DatabaseConnection(mut conn, jar, _): DatabaseConnection,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
     JsonOrForm(new_user): JsonOrForm<Login>,
-) -> Result<(CookieJar, Redirect), error::Error> {
+) -> Result<(CookieJar, TypedHeader<HxRefresh>), error::Error> {
     let encoded = Authorization::basic(&new_user.username, &new_user.password);
     let db_user: InsertableDatabaseUser = new_user.into();
 
@@ -375,7 +376,7 @@ pub async fn signup(
             .to_owned(),
     );
     cookie.set_path("/");
-    Ok((jar.add(cookie), Redirect::to("/")))
+    Ok((jar.add(cookie), TypedHeader(HxRefresh(true))))
 }
 
 #[utoipa::path(
@@ -410,7 +411,7 @@ pub async fn login(
     DatabaseConnection(mut conn, jar, _): DatabaseConnection,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
     JsonOrForm(new_user): JsonOrForm<Login>,
-) -> Result<(CookieJar, Redirect), error::Error> {
+) -> Result<(CookieJar, TypedHeader<HxRefresh>), error::Error> {
     let encoded = Authorization::basic(&new_user.username, &new_user.password);
     let db_user: InsertableDatabaseUser = new_user.into();
 
@@ -432,7 +433,7 @@ pub async fn login(
                 .to_owned(),
         );
         cookie.set_path("/");
-        Ok((jar.add(cookie), Redirect::to("/")))
+        Ok((jar.add(cookie), TypedHeader(HxRefresh(true))))
     } else {
         Err(eyre!("Invalid username or password")).with_status_code(StatusCode::UNAUTHORIZED)
     }
@@ -506,8 +507,8 @@ pub async fn get_login(
 }
 
 #[utoipa::path(
-    post,
-    path = "/auth/patchlogin",
+    patch,
+    path = "/auth/login",
     tag = "Users",
     description = "Edit login information",
     request_body(content(
@@ -537,7 +538,7 @@ pub async fn patch_login(
     DatabaseConnection(mut conn, jar, user): DatabaseConnection,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
     JsonOrForm(changeset_user): JsonOrForm<Login>,
-) -> Result<(CookieJar, Redirect), error::Error> {
+) -> Result<(CookieJar, TypedHeader<HxRefresh>), error::Error> {
     let encoded = Authorization::basic(&changeset_user.username, &changeset_user.password);
     let user_id = user.map(|u| u.id).unwrap_or_default();
     let db_user: InsertableDatabaseUser = changeset_user.into();
@@ -561,7 +562,7 @@ pub async fn patch_login(
     );
     cookie.set_path("/");
 
-    Ok((jar.add(cookie), Redirect::to("/")))
+    Ok((jar.add(cookie), TypedHeader(HxRefresh(true))))
 }
 
 #[utoipa::path(
@@ -588,8 +589,8 @@ pub async fn patch_login(
     ),
 )]
 #[instrument]
-pub async fn logout(cookie_jar: CookieJar) -> (CookieJar, Redirect) {
+pub async fn logout(jar: CookieJar) -> (CookieJar, TypedHeader<HxRefresh>) {
     let mut cookie = Cookie::from("sessionid");
     cookie.set_path("/");
-    (cookie_jar.remove(cookie), Redirect::to("/"))
+    (jar.remove(cookie), TypedHeader(HxRefresh(true)))
 }

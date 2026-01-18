@@ -1,4 +1,4 @@
-<article id="game-<%= game.id %>">
+<article hx-indicator="#game-<%= game.id %>-indicator" id="game-<%= game.id %>">
   <header>
     <nav>
       <ul>
@@ -16,6 +16,7 @@
             <strong><%= game.name %></strong>
           <% } %>
         </li>
+        <li><span id="game-<%= game.id %>-indicator" class="htmx-indicator" aria-busy="true"></span></li>
       </ul>
       <ul hx-target="#game-<%= game.id %>" hx-swap="outerHTML">
         <% if game.user.id == user_id { %>

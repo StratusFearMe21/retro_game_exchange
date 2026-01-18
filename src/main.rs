@@ -26,6 +26,7 @@ mod api;
 mod cli_level_filter;
 mod error;
 mod html_or_json;
+mod htmx;
 mod json_or_form;
 
 pub mod schema;
@@ -213,8 +214,11 @@ async fn main() -> eyre::Result<()> {
         ))
         .routes(routes!(api::auth::signup))
         .routes(routes!(api::auth::logout))
-        .routes(routes!(api::auth::login, api::auth::get_login,))
-        .routes(routes!(api::auth::patch_login))
+        .routes(routes!(
+            api::auth::login,
+            api::auth::get_login,
+            api::auth::patch_login
+        ))
         .split_for_parts();
     api.info = Info::builder()
         .title(env!("CARGO_PKG_NAME"))

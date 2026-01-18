@@ -13,8 +13,8 @@
 </head>
 
 <body>
-  <main class="container">
-    <h1>Retro games exchange</h1>
+  <main class="container" hx-indicator="#general-indicator">
+    <h1>Retro games exchange <span id="general-indicator" class="htmx-indicator" aria-busy="true"></span></h1>
     <div id="error"></div>
     <div hx-get="/auth/login" hx-trigger="load" hx-swap="outerHTML"></div>
     <div hx-get="/games" hx-trigger="load" hx-swap="outerHTML"></div>
