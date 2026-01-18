@@ -14,7 +14,7 @@ use axum_extra::{
 use blake3::{Hash, OUT_LEN};
 use color_eyre::eyre::{Context, eyre};
 use diesel::{
-    ExpressionMethods, HasQuery, QueryDsl, SelectableHelper,
+    ExpressionMethods, HasQuery, QueryDsl,
     backend::Backend,
     deserialize::{self, FromSql, FromSqlRow},
     expression::AsExpression,
@@ -31,7 +31,7 @@ use utoipa::ToSchema;
 use crate::{
     Placeholder,
     api::auth::pool::DatabaseConnection,
-    error::{self, ErrorTemplate, WithStatusCode},
+    error::{self, Error, WithStatusCode},
     html_or_json::HtmlOrJsonHeader,
     json_or_form::JsonOrForm,
     openapi_template,
@@ -167,7 +167,7 @@ impl FromRequestParts<Pool> for User {
         <User as OptionalFromRequestParts<Pool>>::from_request_parts(parts, state)
             .await?
             .ok_or_else(|| eyre!("Your user wasn't found"))
-            .with_status_code(StatusCode::UNAUTHORIZED, HtmlOrJsonHeader::Json)
+            .with_status_code(StatusCode::UNAUTHORIZED)
     }
 }
 
@@ -194,8 +194,7 @@ pub mod pool {
 
     use crate::{
         api::auth::{DatabaseUser, InsertableDatabaseUser, User},
-        error::{self, WithStatusCode},
-        html_or_json::HtmlOrJsonHeader,
+        error::{self, Actions, WithStatusCode},
         schema::users,
     };
 
@@ -239,28 +238,31 @@ pub mod pool {
             let cookie_jar = CookieJar::from_request_parts(parts, pool)
                 .await
                 .wrap_err("Failed to retreive cookies from header")
-                .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, HtmlOrJsonHeader::Json)?;
+                .with_status_code_and_actions(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Actions::sign_out(),
+                )?;
 
             if let Some(TypedHeader(Authorization(basic_auth))) = <TypedHeader<Authorization<Basic>> as OptionalFromRequestParts<
             Pool,
             >>::from_request_parts(parts, pool)
             .await
             .wrap_err("Failed to parse basic auth header")
-            .with_status_code(StatusCode::BAD_REQUEST, HtmlOrJsonHeader::Json)?
+            .with_status_code_and_actions(StatusCode::BAD_REQUEST, Actions::sign_out())?
             .or_else(|| cookie_jar.get("sessionid").and_then(|sessionid| Some(TypedHeader(Authorization(Basic::decode(&HeaderValue::from_str(sessionid.value()).ok()?)?)))))
             {
                 let mut conn = pool
                     .get()
                     .await
                     .wrap_err("Failed to get connection to database")
-                    .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, HtmlOrJsonHeader::Json)?;
+                    .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
-                let user = DatabaseUser::query().filter(users::username.eq(basic_auth.username())).get_result(&mut conn).await.wrap_err("Failed to get user from database").with_status_code(StatusCode::INTERNAL_SERVER_ERROR, HtmlOrJsonHeader::Json)?;     
+                let user = DatabaseUser::query().filter(users::username.eq(basic_auth.username())).get_result(&mut conn).await.wrap_err("Failed to get user from database").with_status_code_and_actions(StatusCode::INTERNAL_SERVER_ERROR, Actions::sign_out())?;     
 
                 let login_attempt: InsertableDatabaseUser = basic_auth.into();
 
                 if login_attempt.password != user.password {
-                    return Err(eyre!("Passwords didn't match")).with_status_code(StatusCode::UNAUTHORIZED, HtmlOrJsonHeader::Json)
+                    return Err(eyre!("Passwords didn't match")).with_status_code_and_actions(StatusCode::UNAUTHORIZED, Actions::sign_out())
                 }
 
                 return Ok(Some(User {
@@ -276,8 +278,9 @@ pub mod pool {
             )
             .await
             .wrap_err("Failed to parse bearer auth header")
-            .with_status_code(StatusCode::BAD_REQUEST, HtmlOrJsonHeader::Json)?
-            {}
+            .with_status_code_and_actions(StatusCode::BAD_REQUEST, Actions::sign_out())?
+            {
+            }
 
             return Ok(None);
         }
@@ -297,13 +300,13 @@ pub mod pool {
             let cookie_jar = CookieJar::from_request_parts(parts, pool)
                 .await
                 .wrap_err("Failed to retreive cookies from header")
-                .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, HtmlOrJsonHeader::Json)?;
+                .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
             let mut conn = pool
                 .get_owned()
                 .await
                 .wrap_err("Failed to get connection to database")
-                .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, HtmlOrJsonHeader::Json)?;
+                .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
             diesel::sql_query(r#"SELECT set_config('app.current_user_id', $1::text, false)"#)
                 .bind::<diesel::sql_types::Integer, _>(
@@ -312,7 +315,7 @@ pub mod pool {
                 .execute(&mut conn)
                 .await
                 .wrap_err("Failed to set user id on connection")
-                .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, HtmlOrJsonHeader::Json)?;
+                .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
             Ok(Self(conn, cookie_jar, user))
         }
@@ -336,14 +339,12 @@ pub mod pool {
         ),
         (status = "4XX", description = "You did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
         (status = "5XX", description = "We did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
     ),
@@ -362,7 +363,7 @@ pub async fn signup(
         .execute(&mut conn)
         .await
         .wrap_err("Failed to insert user into database")
-        .with_status_code(StatusCode::BAD_REQUEST, accept)?;
+        .with_status_code(StatusCode::BAD_REQUEST)?;
 
     let header_value = encoded.0.encode();
     let mut cookie = Cookie::new(
@@ -370,7 +371,7 @@ pub async fn signup(
         header_value
             .to_str()
             .wrap_err("Failed to encode sessionid")
-            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, accept)?
+            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?
             .to_owned(),
     );
     cookie.set_path("/");
@@ -394,14 +395,12 @@ pub async fn signup(
         ),
         (status = "4XX", description = "You did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
         (status = "5XX", description = "We did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
     ),
@@ -420,7 +419,7 @@ pub async fn login(
         .get_result(&mut conn)
         .await
         .wrap_err("Failed to get user from database")
-        .with_status_code(StatusCode::BAD_REQUEST, accept)?;
+        .with_status_code(StatusCode::BAD_REQUEST)?;
 
     if user.password == db_user.password {
         let header_value = encoded.0.encode();
@@ -429,14 +428,13 @@ pub async fn login(
             header_value
                 .to_str()
                 .wrap_err("Failed to encode sessionid")
-                .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, accept)?
+                .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?
                 .to_owned(),
         );
         cookie.set_path("/");
         Ok((jar.add(cookie), Redirect::to("/")))
     } else {
-        Err(eyre!("Invalid username or password"))
-            .with_status_code(StatusCode::UNAUTHORIZED, accept)
+        Err(eyre!("Invalid username or password")).with_status_code(StatusCode::UNAUTHORIZED)
     }
 }
 
@@ -477,14 +475,12 @@ pub struct EditQuery {
         ),
         (status = "4XX", description = "You did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
         (status = "5XX", description = "We did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
     ),
@@ -505,7 +501,7 @@ pub async fn get_login(
         }
         .render_once()
         .wrap_err("Failed to render login template")
-        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, accept)?,
+        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?,
     ))
 }
 
@@ -526,14 +522,12 @@ pub async fn get_login(
         ),
         (status = "4XX", description = "You did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
         (status = "5XX", description = "We did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
     ),
@@ -554,7 +548,7 @@ pub async fn patch_login(
         .execute(&mut conn)
         .await
         .wrap_err("Failed to update user in database")
-        .with_status_code(StatusCode::BAD_REQUEST, accept)?;
+        .with_status_code(StatusCode::BAD_REQUEST)?;
 
     let header_value = encoded.0.encode();
     let mut cookie = Cookie::new(
@@ -562,7 +556,7 @@ pub async fn patch_login(
         header_value
             .to_str()
             .wrap_err("Failed to encode sessionid")
-            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, accept)?
+            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?
             .to_owned(),
     );
     cookie.set_path("/");
@@ -583,14 +577,12 @@ pub async fn patch_login(
         ),
         (status = "4XX", description = "You did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
         (status = "5XX", description = "We did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
     ),

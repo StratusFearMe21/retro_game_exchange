@@ -12,6 +12,3 @@ clean:
 
 run configuration="debug": frontend (backend configuration)
     cargo run {{ if configuration == "release" { "--release" } else { "" } }}
-
-serve configuration="debug":
-    bacon run-long -- {{ configuration }}

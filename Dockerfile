@@ -7,8 +7,8 @@ FROM node AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
-# Install dependencies based on the preferred package manager
-COPY frontend/package.json frontend/yarn.lock* frontend/package-lock.json* frontend/pnpm-lock.yaml* frontend/pnpm-workspace.yaml* frontend/.npmrc* ./frontend/
+# Install dependencies from pnpm
+COPY frontend/package.json frontend/pnpm-lock.yaml* frontend/pnpm-workspace.yaml* frontend/.npmrc* ./frontend/
 COPY frontend/posthtml-lucide ./frontend/posthtml-lucide/
 COPY frontend/parcel-packager-sailfish ./frontend/parcel-packager-sailfish/
 RUN corepack enable pnpm && pnpm i --frozen-lockfile -C frontend
@@ -42,6 +42,7 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 # Build application
 COPY . .
+COPY --from=builder-js /app/frontend/dist frontend/dist
 RUN cargo build --release --bin retro-game-exchange
 
 # We do not need the Rust toolchain to run the binary!

@@ -11,7 +11,6 @@
     "@parcel/compressor-brotli": "^2.16.3",
     "@parcel/compressor-gzip": "^2.16.3",
     "@parcel/config-default": "^2.16.3",
-    "@parcel/packager-raw": "^2.16.3",
     "@parcel/transformer-html": "^2.16.3",
     "@parcel/transformer-posthtml": "^2.16.3",
     "@parcel/transformer-sass": "2.16.3",

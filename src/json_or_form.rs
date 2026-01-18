@@ -7,10 +7,7 @@ use axum_extra::{TypedHeader, headers::Header};
 use color_eyre::eyre::Context;
 use serde::de::DeserializeOwned;
 
-use crate::{
-    error::{Error, WithStatusCode},
-    html_or_json::HtmlOrJsonHeader,
-};
+use crate::error::{Error, WithStatusCode};
 
 #[derive(Clone, Copy, Debug)]
 pub enum JsonOrFormHeader {
@@ -70,14 +67,14 @@ impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for JsonOrForm<T> {
                 Json::from_request(req, state)
                     .await
                     .wrap_err("Failed to deserialize type to JSON")
-                    .with_status_code(StatusCode::BAD_REQUEST, HtmlOrJsonHeader::Json)?
+                    .with_status_code(StatusCode::BAD_REQUEST)?
                     .0
             }
             JsonOrFormHeader::Form => {
                 Form::from_request(req, state)
                     .await
                     .wrap_err("Failed to deserialize type to Form")
-                    .with_status_code(StatusCode::BAD_REQUEST, HtmlOrJsonHeader::Html)?
+                    .with_status_code(StatusCode::BAD_REQUEST)?
                     .0
             }
         };

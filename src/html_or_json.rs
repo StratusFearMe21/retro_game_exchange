@@ -65,7 +65,7 @@ macro_rules! impl_for_templates {
                             .1
                             .$call(&mut buffer)
                             .wrap_err("Failed to render template")
-                            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, self.0)
+                            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)
                         {
                             Ok(()) => {
                                 SIZE_HINT.update(buffer.len());

@@ -16,7 +16,7 @@ use utoipa::ToSchema;
 use crate::{
     Placeholder,
     api::auth::{User, pool::DatabaseConnection},
-    error::{self, ErrorTemplate, WithStatusCode},
+    error::{self, Error, WithStatusCode},
     html_or_json::{HtmlOrJsonHeader, HtmlOrJsonOnce, HtmlOrJsonSimple},
     json_or_form::JsonOrForm,
     openapi_template,
@@ -191,14 +191,12 @@ openapi_template!(AllGamesTemplate, games);
         ),
         (status = "4XX", description = "You did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
         (status = "5XX", description = "We did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
     ),
@@ -217,7 +215,7 @@ pub async fn get_all_games(
         .load(&mut conn)
         .await
         .wrap_err("Failed to get updated games list")
-        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, accept)?;
+        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(HtmlOrJsonOnce(
         accept,
@@ -247,14 +245,12 @@ pub struct GetGameQuery {
         ),
         (status = "4XX", description = "You did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
         (status = "5XX", description = "We did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
     ),
@@ -280,7 +276,7 @@ pub async fn get_game(
         .get_result(&mut conn)
         .await
         .wrap_err("Failed to get updated games list")
-        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, accept)?;
+        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let user_id = user.map(|u| u.id);
     Ok(HtmlOrJsonSimple(
@@ -311,14 +307,12 @@ pub async fn get_game(
         ),
         (status = "4XX", description = "You did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
         (status = "5XX", description = "We did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
     ),
@@ -342,13 +336,13 @@ pub async fn add_game(
             .execute(&mut conn)
             .await
             .wrap_err("Failed to insert game into database")
-            .with_status_code(StatusCode::BAD_REQUEST, accept)?;
+            .with_status_code(StatusCode::BAD_REQUEST)?;
 
         let games = GameModel::query()
             .load(&mut conn)
             .await
             .wrap_err("Failed to get updated games list")
-            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, accept)?;
+            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
         Ok(HtmlOrJsonOnce(
             accept,
@@ -358,7 +352,7 @@ pub async fn add_game(
             },
         ))
     } else {
-        Err(eyre!("You aren't logged in")).with_status_code(StatusCode::UNAUTHORIZED, accept)
+        Err(eyre!("You aren't logged in")).with_status_code(StatusCode::UNAUTHORIZED)
     }
 }
 
@@ -380,14 +374,12 @@ pub async fn add_game(
         ),
         (status = "4XX", description = "You did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
         (status = "5XX", description = "We did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
     ),
@@ -414,14 +406,14 @@ pub async fn update_game(
         .execute(&mut conn)
         .await
         .wrap_err("Failed to update game in database")
-        .with_status_code(StatusCode::BAD_REQUEST, accept)?;
+        .with_status_code(StatusCode::BAD_REQUEST)?;
 
     let updated_game = GameModel::query()
         .filter(games::id.eq(game_id))
         .get_result(&mut conn)
         .await
         .wrap_err("Failed to get updated game in database")
-        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, accept)?;
+        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(HtmlOrJsonSimple(
         accept,
@@ -450,14 +442,12 @@ pub async fn update_game(
         ),
         (status = "4XX", description = "You did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
         (status = "5XX", description = "We did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
     ),
@@ -481,14 +471,14 @@ pub async fn patch_game(
         .execute(&mut conn)
         .await
         .wrap_err("Failed to update game in database")
-        .with_status_code(StatusCode::BAD_REQUEST, accept)?;
+        .with_status_code(StatusCode::BAD_REQUEST)?;
 
     let updated_game = GameModel::query()
         .filter(games::id.eq(game_id))
         .get_result(&mut conn)
         .await
         .wrap_err("Failed to get updated game in database")
-        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR, accept)?;
+        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(HtmlOrJsonSimple(
         accept,
@@ -514,14 +504,12 @@ pub async fn patch_game(
         ),
         (status = "4XX", description = "You did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
         (status = "5XX", description = "We did something wrong",
             content(
-                (inline(ErrorTemplate) = "text/html", example = ErrorTemplate::render_placeholder),
-                (ErrorTemplate, example = ErrorTemplate::placeholder)
+                (Error, example = Error::placeholder),
             )
         ),
     ),
@@ -543,7 +531,7 @@ pub async fn delete_game(
         .execute(&mut conn)
         .await
         .wrap_err("Failed to delete game in database")
-        .with_status_code(StatusCode::BAD_REQUEST, accept)?;
+        .with_status_code(StatusCode::BAD_REQUEST)?;
 
     Ok(())
 }

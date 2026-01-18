@@ -68,7 +68,7 @@ macro_rules! openapi_template_utoipa {
         impl $t {
             #[allow(unused_imports)]
             pub fn render_placeholder() -> String {
-                use sailfish::TemplateOnce;
+                use sailfish::{TemplateOnce, TemplateSimple};
 
                 let html = biome_html_parser::parse_html(
                     &Self::placeholder()
