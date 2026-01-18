@@ -22,6 +22,7 @@
     "@picocss/pico": "^2.1.1",
     "htmx.org": "^2.0.8",
     "parcel-packager-sailfish": "link:parcel-packager-sailfish",
-    "posthtml-lucide": "link:posthtml-lucide"
+    "posthtml-lucide": "link:posthtml-lucide",
+    "sweetalert": "^2.1.2"
   }
 }
