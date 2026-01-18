@@ -108,6 +108,16 @@ impl PartialSchema for Error {
             };
         }
 
+        obj.required = vec![
+            "title".to_owned(),
+            "text".to_owned(),
+            "icon".to_owned(),
+            "chain".to_owned(),
+            "spantrace".to_owned(),
+            "buttons".to_owned(),
+            "content".to_owned(),
+        ];
+
         obj.properties.insert("title".to_owned(), string!());
         obj.properties.insert("text".to_owned(), string!());
         obj.properties.insert("icon".to_owned(), string!());
