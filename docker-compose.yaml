@@ -6,7 +6,7 @@ services:
       - pgdata:/var/lib/postgresql
       - ./docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:Z
     image: postgres
-    restart: always
+    restart: unless-stopped
     # set shared memory limit when using docker compose
     shm_size: 128mb
     # or set shared memory limit when deploy via swarm stack

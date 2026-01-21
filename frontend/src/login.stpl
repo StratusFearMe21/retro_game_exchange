@@ -31,6 +31,7 @@
         <li><a hx-get="/auth/logout">Logout</a></li>
         <% if !editing { %>
           <li><a hx-get="/auth/login?edit=true"><i data-lucide="pencil" /></a></li>
+          <li><a hx-delete="/auth/login"><i data-lucide="trash" /></a></li>
         <% } %>
       </ul>
     </nav>

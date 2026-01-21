@@ -217,7 +217,8 @@ async fn main() -> eyre::Result<()> {
         .routes(routes!(
             api::auth::login,
             api::auth::get_login,
-            api::auth::patch_login
+            api::auth::patch_login,
+            api::auth::delete_login
         ))
         .split_for_parts();
     api.info = Info::builder()

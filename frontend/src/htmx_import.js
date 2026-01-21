@@ -28,9 +28,8 @@ document.body.addEventListener("htmx:beforeSwap", function(evt) {
     )
     .then((value) => {
       switch (value) {
- 
         case "sign_out":
-          window.location.replace("/auth/logout");
+          window.htmx.default.ajax('GET', '/auth/logout');
           break;
        }
     });

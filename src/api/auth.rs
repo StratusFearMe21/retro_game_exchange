@@ -594,3 +594,44 @@ pub async fn logout(jar: CookieJar) -> (CookieJar, TypedHeader<HxRefresh>) {
     cookie.set_path("/");
     (jar.remove(cookie), TypedHeader(HxRefresh(true)))
 }
+
+#[utoipa::path(
+    delete,
+    path = "/auth/login",
+    tag = "Users",
+    description = "Delete account",
+    responses(
+        (status = OK, description = "Ok",
+            headers(
+                ("Set-Cookie" = String)
+            ),
+        ),
+        (status = "4XX", description = "You did something wrong",
+            content(
+                (Error, example = Error::placeholder),
+            )
+        ),
+        (status = "5XX", description = "We did something wrong",
+            content(
+                (Error, example = Error::placeholder),
+            )
+        ),
+    ),
+)]
+#[instrument(skip(conn))]
+pub async fn delete_login(
+    DatabaseConnection(mut conn, jar, user): DatabaseConnection,
+) -> Result<(CookieJar, TypedHeader<HxRefresh>), error::Error> {
+    let user_id = user.map(|u| u.id).unwrap_or_default();
+
+    diesel::delete(users::table)
+        .filter(users::id.eq(user_id))
+        .execute(&mut conn)
+        .await
+        .wrap_err("Failed to delete user from database")
+        .with_status_code(StatusCode::BAD_REQUEST)?;
+
+    let mut cookie = Cookie::from("sessionid");
+    cookie.set_path("/");
+    Ok((jar.remove(cookie), TypedHeader(HxRefresh(true))))
+}
