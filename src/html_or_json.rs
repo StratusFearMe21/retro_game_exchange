@@ -1,14 +1,28 @@
 use axum::{
     Json,
-    http::{HeaderName, HeaderValue, StatusCode},
+    http::{HeaderValue, StatusCode, header::ACCEPT},
     response::{Html, IntoResponse},
 };
 use axum_extra::headers::Header;
 use color_eyre::eyre::Context;
-use sailfish::{Template, TemplateMut, TemplateOnce, TemplateSimple};
+use sailfish::{TemplateOnce, TemplateSimple};
 use serde::Serialize;
 
 use crate::error::WithStatusCode;
+
+#[derive(TemplateSimple)]
+#[template(path = "header.stpl")]
+#[template(rm_whitespace = true, rm_newline = true)]
+pub struct HeaderSimple<T: TemplateSimple> {
+    template: T,
+}
+
+#[derive(TemplateSimple)]
+#[template(path = "header.stpl")]
+#[template(rm_whitespace = true, rm_newline = true)]
+pub struct HeaderOnce<T: TemplateOnce> {
+    template: T,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum HtmlOrJsonHeader {
@@ -18,8 +32,7 @@ pub enum HtmlOrJsonHeader {
 
 impl Header for HtmlOrJsonHeader {
     fn name() -> &'static axum::http::HeaderName {
-        static NAME: HeaderName = HeaderName::from_static("accept");
-        &NAME
+        &ACCEPT
     }
 
     fn decode<'i, I>(values: &mut I) -> Result<Self, axum_extra::headers::Error>
@@ -47,41 +60,49 @@ impl Header for HtmlOrJsonHeader {
 }
 
 macro_rules! impl_for_templates {
-    ($ty_name:ident,$trait:ident,$call:ident) => {
-        pub struct $ty_name<T>(pub HtmlOrJsonHeader, pub T);
+    ($ty_name:ident,$header:ident,$trait:ident,$call:ident) => {
+        pub struct $ty_name<T>(pub HtmlOrJsonHeader, pub crate::htmx::HxRequest, pub T);
 
         impl<T: $trait + Serialize> IntoResponse for $ty_name<T> {
             #[allow(unused_mut)]
             fn into_response(mut self) -> axum::response::Response {
+                use axum::http::header::HeaderValue;
+                use axum_extra::{headers, typed_header::TypedHeader};
+
+                use crate::htmx::HxRequest;
+
+                let vary_header = TypedHeader(
+                    headers::Vary::decode(
+                        &mut [
+                            HeaderValue::from(HxRequest::name().clone()),
+                            HeaderValue::from(ACCEPT),
+                        ]
+                        .iter(),
+                    )
+                    .unwrap(),
+                );
                 match self.0 {
                     HtmlOrJsonHeader::Html => {
-                        use sailfish::runtime::{Buffer, SizeHint};
-
-                        let error_div = r#"<div id="error" hx-swap-oob="true"></div>"#;
-                        static SIZE_HINT: SizeHint = SizeHint::new();
-                        let mut buffer = Buffer::with_capacity(SIZE_HINT.get());
-                        buffer.push_str(error_div);
-                        match self
-                            .1
-                            .$call(&mut buffer)
-                            .wrap_err("Failed to render template")
-                            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)
-                        {
-                            Ok(()) => {
-                                SIZE_HINT.update(buffer.len());
-                                Html(buffer.into_string()).into_response()
-                            }
-                            Err(e) => e.into_response(),
+                        let html = if self.1.0 {
+                            self.2.$call()
+                        } else {
+                            $header { template: self.2 }.render_once()
+                        }
+                        .wrap_err("Failed to render template")
+                        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR);
+                        match html {
+                            Ok(html) => (vary_header, Html(html)).into_response(),
+                            Err(e) => (vary_header, e).into_response(),
                         }
                     }
-                    HtmlOrJsonHeader::Json => Json(self.1).into_response(),
+                    HtmlOrJsonHeader::Json => (vary_header, Json(self.2)).into_response(),
                 }
             }
         }
     };
 }
 
-impl_for_templates!(HtmlOrJson, Template, render_to);
-impl_for_templates!(HtmlOrJsonMut, TemplateMut, render_mut_to);
-impl_for_templates!(HtmlOrJsonOnce, TemplateOnce, render_once_to);
-impl_for_templates!(HtmlOrJsonSimple, TemplateSimple, render_once_to);
+// impl_for_templates!(HtmlOrJson, HeaderOnce, Template, render);
+// impl_for_templates!(HtmlOrJsonMut, HeaderOnce, TemplateMut, render_mut);
+impl_for_templates!(HtmlOrJsonOnce, HeaderOnce, TemplateOnce, render_once);
+impl_for_templates!(HtmlOrJsonSimple, HeaderSimple, TemplateSimple, render_once);

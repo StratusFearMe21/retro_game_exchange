@@ -1,5 +1,13 @@
 {
 	"plugins": {
-		"posthtml-lucide": {}
+		"posthtml-include": {},
+	    "posthtml-component": {
+			"root": "./src",
+			"attribute": "component",
+			"folders": [
+				"components"
+			]
+	    },
+		"posthtml-lucide": {},
 	}
 }

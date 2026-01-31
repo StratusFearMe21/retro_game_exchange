@@ -1,29 +1,29 @@
-<article hx-indicator="#game-<%= game.id %>-indicator" id="game-<%= game.id %>">
+<article id="game-<%= game.id %>">
   <header>
     <nav>
       <ul>
         <li>
           <% if editing { %>
-            <form class="game-<%= game.id %>-input">
+            <form id="game-<%= game.id %>-name-form" class="game-<%= game.id %>-input">
               <input
                 id="game-<%= game.id %>-name"
                 name="name"
                 placeholder="Name"
                 value="<%= game.name %>"
+                required
               />
             </form>
           <% } else { %>
             <strong><%= game.name %></strong>
           <% } %>
         </li>
-        <li><span id="game-<%= game.id %>-indicator" class="htmx-indicator" aria-busy="true"></span></li>
       </ul>
       <ul hx-target="#game-<%= game.id %>" hx-swap="outerHTML">
         <% if game.user.id == user_id { %>
           <% if game.id == 0 { %>
-            <li><a hx-target="#games" hx-include=".game-<%= game.id %>-input" hx-post="/games"><i data-lucide="plus" /></a></li>
+            <li><a hx-target="#games" hx-include=".game-<%= game.id %>-input" hx-validate="true" hx-post="/games"><i data-lucide="plus" /></a></li>
           <% } else if editing { %>
-            <li><a hx-include=".game-<%= game.id %>-input" hx-put="/games/<%= game.id %>"><i data-lucide="check" /></a></li>
+            <li><a hx-include=".game-<%= game.id %>-input" hx-validate="true" hx-put="/games/<%= game.id %>"><i data-lucide="check" /></a></li>
           <% } else { %>
             <li><a hx-delete="/games/<%= game.id %>"><i data-lucide="trash" /></a></li>
             <li><a hx-get="/games/<%= game.id %>?edit=true"><i data-lucide="pencil" /></a></li>
@@ -33,14 +33,13 @@
     </nav>
   </header>
   <form id="game-<%= game.id %>-form" class="game-<%= game.id %>-input">
-    <fieldset>
+    <fieldset class="grid game-grid">
       <label>
         Condition
         <select
           name="condition"
           aria-label="Condition"
-          __prop__="<% if !editing { %>disabled<% } %>"
-          required>
+          __prop__="<% if !editing { %>disabled<% } %>">
             <option
               __prop__="<% if game.condition == None { %>selected<% } %>"
               disabled
@@ -91,6 +90,23 @@
     </fieldset>
   </form>
   <% if game.id != 0 { %>
-    <footer>Owned by <%= game.user.username %></footer>
+    <footer>
+      <nav hx-boost="true">
+        <ul>
+          <li>
+            <% if game.user.id == user_id { %>
+              Owned by you
+            <% } else { %>
+              Owned by <%= game.user.username %>
+            <% } %>
+          </li>
+        </ul>
+        <ul>
+          <% if game.user.id != user_id { %>
+            <li><a href="/games/<%= game.id %>/make-offer" data-ignore-params><i data-lucide="handshake" /></a></li>
+          <% } %>
+        </ul>
+      </nav>
+    </footer>
   <% } %>
 </article>

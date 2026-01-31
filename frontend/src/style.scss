@@ -1,18 +1,69 @@
-@use "@picocss/pico/scss/pico" as pico;
+@use "@picocss/pico/scss/pico" as *;
 @use "sass:map";
 
 .game-grid {
-  @if map.get(pico.$breakpoints, "md") {
-    @media (min-width: map.get(map.get(pico.$breakpoints, "md"), "breakpoint")) {
+  grid-template-columns: repeat(1, 1fr);
+
+  /* @if map.get($breakpoints, "md") { */
+  /* @media (min-width: map.get(map.get($breakpoints, "md"), "breakpoint")) { */
+  /* grid-template-columns: repeat(1, 1fr); */
+  /* } */
+  /* } */
+
+  @if map.get($breakpoints, "lg") {
+    @media (min-width: map.get(map.get($breakpoints, "lg"), "breakpoint")) {
       grid-template-columns: repeat(2, 1fr);
     }
   }
 
-  @if map.get(pico.$breakpoints, "lg") {
-    @media (min-width: map.get(map.get(pico.$breakpoints, "lg"), "breakpoint")) {
-      grid-template-columns: repeat(3, 1fr);
+}
+
+.hero {
+  text-align: center;
+
+  hgroup {
+    margin: 3rem 0;
+  }
+
+  h1 {
+    --pico-font-size: 3rem;
+  }
+
+  @if map.get($breakpoints, "sm") {
+    @media (min-width: map.get(map.get($breakpoints, "sm"), "breakpoint")) {
+      h1 {
+        --pico-font-size: 4rem;
+      }
     }
   }
 
-  /* grid-template-rows: repeat(5, 1fr); */
+  @if map.get($breakpoints, "md") {
+    @media (min-width: map.get(map.get($breakpoints, "md"), "breakpoint")) {
+      h1 {
+        --pico-font-size: 6rem;
+      }
+    }
+  }
+
+  @if map.get($breakpoints, "xxl") {
+    @media (min-width: map.get(map.get($breakpoints, "xxl"), "breakpoint")) {
+      h1 {
+        --pico-font-size: 8rem;
+      }
+    }
+  }
+}
+
+.login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.center-height {
+  height: 80vh;
+}
+
+.login-inner {
+  max-width: map.get(map.get($breakpoints, "sm"), "viewport");
 }

@@ -1,5 +1,6 @@
 {
   "extends": "@parcel/config-default",
+  "resolvers": ["parcel-resolver-ignore", "..."],
   "compressors": {
     "*.{html,css,js,svg,map}": [
       "...",
@@ -14,6 +15,6 @@
     ]
   },
   "packagers": {
-    "*.stpl": "parcel-packager-sailfish",
+    "*.stpl": "parcel-packager-sailfish"
   }
 }

@@ -1,0 +1,65 @@
+_format_version: "3.0"
+services:
+  - name: web-api-auth-service
+    host: web-auth
+    port: 3000
+    protocol: http
+    routes:
+      - name: web-api-auth-routes
+        strip_path: false
+        paths:
+          - /auth
+  - name: web-api-service
+    host: web-api-upstream
+    protocol: http
+    routes:
+      - name: web-api-routes
+        paths:
+          - /
+
+# AI generated
+upstreams:
+  - name: web-api-upstream
+    algorithm: round-robin
+    slots: 1000
+    healthchecks:
+      # Active checks: Kong periodically probes the endpoint
+      active:
+        type: http
+        http_path: "/health"
+        timeout: 1
+        concurrency: 10
+        healthy:
+          interval: 5
+          http_statuses:
+            - 200
+            - 302
+          successes: 2
+        unhealthy:
+          interval: 5
+          http_statuses:
+            - 429
+            - 404
+            - 500
+            - 503
+          tcp_failures: 2
+          timeouts: 2
+          http_failures: 2
+      # Passive checks: Kong monitors real user traffic (Circuit Breaker)
+      passive:
+        type: http
+        healthy:
+          http_statuses:
+            - 200
+            - 201
+          successes: 5
+        unhealthy:
+          http_statuses:
+            - 500
+            - 503
+          tcp_failures: 2
+          timeouts: 2
+          http_failures: 5
+    targets:
+      - target: web:3000
+        weight: 100

@@ -1,24 +1,3 @@
-<!doctype html>
-<html lang="en">
-
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Parcel Vanilla App</title>
-  <meta name="color-scheme" content="light dark">
-  <link rel="stylesheet" href="style.scss">
-  <script type="module" src="index.js"></script>
-  <meta name="htmx-config"
-    content="{&quot;responseHandling&quot;: [{&quot;code&quot;:&quot;204&quot;, &quot;swap&quot;: false},{&quot;code&quot;:&quot;...&quot;, &quot;swap&quot;: true}]}">
-</head>
-
-<body>
-  <main class="container" hx-indicator="#general-indicator">
-    <h1>Retro games exchange <span id="general-indicator" class="htmx-indicator" aria-busy="true"></span></h1>
-    <div id="error"></div>
-    <div hx-get="/auth/login" hx-trigger="load" hx-swap="outerHTML"></div>
-    <div hx-get="/games" hx-trigger="load" hx-swap="outerHTML"></div>
-  </main>
-</body>
-
-</html>
+<x-header>
+  <include src="src/partials/index.html">
+</x-header>

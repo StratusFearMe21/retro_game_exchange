@@ -1,12 +1,25 @@
-window.htmx = require('htmx.org');
-swal = require('sweetalert')
+window.htmx = require('htmx.org').default;
+const swal = require('sweetalert');
 
 document.body.addEventListener("htmx:configRequest", function(evt) {
   for (const key of Reflect.ownKeys(evt.detail.parameters)) {
-    console.log(evt.detail.parameters[key])
     if (evt.detail.parameters[key] === "") {
       delete evt.detail.parameters[key];
     }
+  }
+});
+
+document.body.addEventListener("htmx:beforeRequest", function(evt) {
+  if (evt.detail.elt !== document.body) {
+    const elt = window.htmx.find(evt.detail.elt, ':not(input, select, textarea, html, form)')
+    elt.ariaBusy = true;
+  }
+});
+
+document.body.addEventListener("htmx:beforeOnLoad", function(evt) {
+  if (evt.detail.elt !== document.body) {
+    const elt = window.htmx.find(evt.detail.elt, ':not(input, select, textarea, html, form)')
+    elt.ariaBusy = false;
   }
 });
 
@@ -29,7 +42,7 @@ document.body.addEventListener("htmx:beforeSwap", function(evt) {
     .then((value) => {
       switch (value) {
         case "sign_out":
-          window.htmx.default.ajax('GET', '/auth/logout');
+          window.htmx.ajax('GET', '/auth/logout');
           break;
        }
     });

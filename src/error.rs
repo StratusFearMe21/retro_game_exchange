@@ -161,7 +161,10 @@ impl Serialize for Error {
                 .canonical_reason()
                 .unwrap_or_else(|| self.status_code.as_str()),
         )?;
-        obj.serialize_field("icon", "error")?;
+        obj.serialize_field(
+            "icon",
+            &format!("http://http.dog/{}.jpg", self.status_code.as_u16()),
+        )?;
         obj.serialize_field("chain", &SerializeChain(&self.error))?;
         let handler: &color_eyre::Handler = self.error.handler().downcast_ref().unwrap();
         obj.serialize_field(

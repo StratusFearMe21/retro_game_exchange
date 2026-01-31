@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parcel Vanilla App</title>
+  <meta name="color-scheme" content="light dark">
+  <link rel="stylesheet" href="/src/style.scss">
+  <script type="module" src="/src/index.js"></script>
+  <meta name="htmx-config"
+    content="{&quot;responseHandling&quot;: [{&quot;code&quot;:&quot;204&quot;, &quot;swap&quot;: false},{&quot;code&quot;:&quot;...&quot;, &quot;swap&quot;: true}],&quot;reportValidityOfForms&quot;: true}">
+</head>
+
+<body>
+  <main class="container" hx-target="#content">
+    <nav hx-boost="true">
+      <ul>
+        <li><a href="/src/index.html">🕹️</a></li>
+      </ul>
+      <ul>
+        <li><a href="#" class="contrast">Players</a></li>
+        <li><a href="/games" class="contrast">Games</a></li>
+        <li><a href="#" class="contrast">Account</a></li>
+      </ul>
+    </nav>
+    <div id="content">
+      <yield></yield>
+    </div>
+  </main>
+</body>
+
+</html>

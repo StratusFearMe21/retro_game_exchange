@@ -1,8 +1,16 @@
+<form id="game-search" role="search" hx-boost="true" method="GET" action="/games" hx-trigger="input changed delay:500ms, submit" hx-preserve>
+  <input type="search" name="q" placeholder="Search" value="<%= self.search_query %>" />
+  <button type="submit">Search</button>
+</form>
 <div class="grid game-grid" id="games">
-  <% let editing = true; let user_id = 0; let game = GameModel::default(); %>
-  <% include!("./game.stpl"); %>
-  <% let editing = false; let user_id = self.user_id; %>
-  <% for game in self.games { %>
+  <% if self.user_id == 0 { %>
+    <p>Please log in to see available games</p>
+  <% } else { %>
+    <% let editing = true; let user_id = 0; let game = GameModel::default(); %>
     <% include!("./game.stpl"); %>
+    <% let editing = false; let user_id = self.user_id; %>
+    <% for game in self.games { %>
+      <% include!("./game.stpl"); %>
+    <% } %>
   <% } %>
 </div>

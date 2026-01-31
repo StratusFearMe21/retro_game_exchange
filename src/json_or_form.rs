@@ -1,7 +1,7 @@
 use axum::{
     Form, Json,
     extract::{FromRequest, FromRequestParts},
-    http::{HeaderName, HeaderValue, Request, StatusCode},
+    http::{HeaderValue, Request, StatusCode, header::CONTENT_TYPE},
 };
 use axum_extra::{TypedHeader, headers::Header};
 use color_eyre::eyre::Context;
@@ -17,8 +17,7 @@ pub enum JsonOrFormHeader {
 
 impl Header for JsonOrFormHeader {
     fn name() -> &'static axum::http::HeaderName {
-        static NAME: HeaderName = HeaderName::from_static("content-type");
-        &NAME
+        &CONTENT_TYPE
     }
 
     fn decode<'i, I>(values: &mut I) -> Result<Self, axum_extra::headers::Error>

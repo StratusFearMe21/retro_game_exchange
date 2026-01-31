@@ -4,7 +4,6 @@ services:
     volumes:
       # PGDATA directory is persisted between restarts
       - pgdata:/var/lib/postgresql
-      - ./docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:Z
     image: postgres
     restart: unless-stopped
     # set shared memory limit when using docker compose
@@ -15,6 +14,8 @@ services:
     #    target: /dev/shm
     #    tmpfs:
     #      size: 134217728 # 128*2^20 bytes = 128Mb
+    build:
+      context: docker/postgres
     healthcheck:
       test:
         [
@@ -34,17 +35,85 @@ services:
       POSTGRES_DB: postgres
      
 
-  retro_game_exchange:
+  kong:
+    image: kong:3
     restart: unless-stopped
     ports:
-      - 3000:3000
+      - 8000:8000/tcp
+      - 8443:8443/tcp
+    volumes:
+      - ./volumes/api:/kong/declarative/
+      - type: tmpfs
+        target: /tmp
+      - type: tmpfs
+        target: /var/run/kong
+      # - ./api/kong.yml:/kong/declarative/kong.yml
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      KONG_PREFIX: /var/run/kong
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,request-termination,ip-restriction
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+    # https://unix.stackexchange.com/a/294837
+    # entrypoint: bash -c 'eval "echo \"$$(cat /kong/declarative/temp.yml)\"" > /kong/declarative/kong.yml && /docker-entrypoint.sh kong docker-start'
+  
+  web-auth:
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     build:
       context: .
+      dockerfile: docker/Dockerfile
     environment:
       DATABASE_URL: postgres://docker:example@db/docker
+      SERVICE_TYPE: auth
+      RUST_LOG: debug
+    deploy:
+      mode: replicated
+      replicas: 3
+
+  web:
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      web-auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      DATABASE_URL: postgres://docker:example@db/docker
+      AUTH_SERVICE: http://web-auth:3000
+      RUST_LOG: debug
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    models:
+      - embedding-model
+    deploy:
+      mode: replicated
+      replicas: 3
+
+
+models:
+  embedding-model:
+    model: ai/embeddinggemma-vllm
 
 volumes:
   pgdata:

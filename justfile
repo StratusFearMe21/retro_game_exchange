@@ -12,3 +12,6 @@ clean:
 
 run configuration="debug": frontend (backend configuration)
     cargo run {{ if configuration == "release" { "--release" } else { "" } }}
+
+up:
+    docker compose up --build -d

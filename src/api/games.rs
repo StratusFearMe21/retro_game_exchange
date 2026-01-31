@@ -1,44 +1,78 @@
+use std::fmt::Display;
+
 use axum::{
     Json,
     extract::{Path, Query},
     http::StatusCode,
 };
 use axum_extra::TypedHeader;
-use color_eyre::eyre::{Context, eyre};
+use color_eyre::eyre::{Context, OptionExt, eyre};
 use diesel::{ExpressionMethods, HasQuery, QueryDsl, prelude::*};
 use diesel_async::RunQueryDsl;
 use diesel_derive_enum::DbEnum;
+use pgvector::VectorExpressionMethods;
 use sailfish::{TemplateOnce, TemplateSimple};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use tracing::instrument;
 use utoipa::ToSchema;
 
 use crate::{
-    Placeholder,
-    api::auth::{User, pool::DatabaseConnection},
+    Placeholder, SearchQuery,
+    api::{auth::pool::DatabaseConnection, users::User},
+    embeddings::EmbeddingRetreiver,
     error::{self, Error, WithStatusCode},
     html_or_json::{HtmlOrJsonHeader, HtmlOrJsonOnce, HtmlOrJsonSimple},
+    htmx::{HxQuery, HxRequest},
     json_or_form::JsonOrForm,
-    openapi_template,
+    openapi_template_render, openapi_template_serialize, openapi_template_utoipa,
     schema::{games, sql_types, users},
 };
 
-#[derive(Insertable, AsChangeset, ToSchema, Deserialize, Serialize, Debug)]
+fn default_pgvector() -> pgvector::Vector {
+    pgvector::Vector::from(Vec::new())
+}
+
+#[derive(HasQuery, Insertable, AsChangeset, ToSchema, Deserialize, Serialize, Debug)]
 #[diesel(table_name = crate::schema::games)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct InsertableGame {
-    name: String,
+    pub name: String,
     #[serde(skip)]
-    owned_by: i32,
+    pub owned_by: i32,
     #[diesel(treat_none_as_null = true)]
-    publisher: Option<String>,
+    pub publisher: Option<String>,
     #[diesel(treat_none_as_null = true)]
     #[schema(minimum = 0, maximum = 65535)]
-    year: Option<i16>,
+    pub year: Option<i16>,
     #[diesel(treat_none_as_null = true)]
-    platform: Option<String>,
+    pub platform: Option<String>,
     #[diesel(treat_none_as_null = true)]
-    condition: Option<Condition>,
+    pub condition: Option<Condition>,
+    #[serde(skip, default = "default_pgvector")]
+    pub embedding: pgvector::Vector,
+}
+
+impl Display for InsertableGame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "A ")?;
+        if let Some(condition) = self.condition {
+            write!(f, "{} condition ", condition)?;
+        }
+        write!(f, "copy of the game {}, ", self.name)?;
+        if self.publisher.is_some() || self.year.is_some() {
+            write!(f, "published ")?;
+            if let Some(publisher) = self.publisher.as_ref() {
+                write!(f, "by {} ", publisher)?;
+            }
+            if let Some(year) = self.year.as_ref() {
+                write!(f, "in {} ", year)?;
+            }
+        }
+        if let Some(platform) = self.platform.as_ref() {
+            write!(f, "for the {} platform.", platform)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(AsChangeset, ToSchema, Deserialize, Serialize, Debug)]
@@ -72,9 +106,11 @@ pub struct ChangesetGame {
         with = "::serde_with::rust::double_option"
     )]
     condition: Option<Option<Condition>>,
+    #[serde(skip)]
+    embedding: Option<pgvector::Vector>,
 }
 
-#[derive(HasQuery, ToSchema, Deserialize, Serialize, Debug, Default)]
+#[derive(HasQuery, ToSchema, Serialize, Debug, Default)]
 #[diesel(table_name = crate::schema::games)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 #[diesel(base_query = games::table.inner_join(users::table))]
@@ -87,16 +123,36 @@ pub struct GameModel {
     platform: Option<String>,
     condition: Option<Condition>,
     #[diesel(embed)]
+    #[schema(value_type = String)]
+    #[serde(serialize_with = "serialize_user_id")]
     user: User,
 }
 
-#[derive(DbEnum, ToSchema, Deserialize, Serialize, Debug, PartialEq)]
+fn serialize_user_id<S>(user: &User, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&format!("/users/{}", user.id))
+}
+
+#[derive(Clone, Copy, DbEnum, ToSchema, Deserialize, Serialize, Debug, PartialEq)]
 #[db_enum(existing_type_path = "sql_types::Condition")]
 pub enum Condition {
     Mint,
     Good,
     Fair,
     Poor,
+}
+
+impl Display for Condition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Mint => write!(f, "mint"),
+            Self::Good => write!(f, "good"),
+            Self::Fair => write!(f, "fair"),
+            Self::Poor => write!(f, "poor"),
+        }
+    }
 }
 
 impl Placeholder for InsertableGame {
@@ -108,6 +164,7 @@ impl Placeholder for InsertableGame {
             year: Some(2023),
             platform: Some("PC".to_owned()),
             condition: Some(Condition::Mint),
+            embedding: pgvector::Vector::from(Vec::new()),
         }
     }
 }
@@ -120,6 +177,7 @@ impl Placeholder for ChangesetGame {
             year: Some(Some(2023)),
             platform: Some(Some("PC".to_owned())),
             condition: Some(Some(Condition::Mint)),
+            embedding: Some(pgvector::Vector::from(Vec::new())),
         }
     }
 }
@@ -138,11 +196,12 @@ impl Placeholder for GameModel {
     }
 }
 
-#[derive(TemplateOnce)]
+#[derive(TemplateOnce, Default)]
 #[template(path = "games/all_games.stpl")]
 #[template(rm_whitespace = true, rm_newline = true)]
 pub struct AllGamesTemplate {
     games: Vec<GameModel>,
+    search_query: String,
     user_id: i32,
 }
 
@@ -159,7 +218,8 @@ impl Placeholder for AllGamesTemplate {
     fn placeholder() -> Self {
         Self {
             games: vec![GameModel::placeholder()],
-            user_id: 0,
+            search_query: String::new(),
+            user_id: 1,
         }
     }
 }
@@ -169,13 +229,30 @@ impl Placeholder for GameTemplate {
         Self {
             game: GameModel::placeholder(),
             editing: false,
-            user_id: 0,
+            user_id: 1,
         }
     }
 }
 
-openapi_template!(GameTemplate, game);
-openapi_template!(AllGamesTemplate, games);
+openapi_template_utoipa!(GameTemplate);
+openapi_template_serialize!(GameTemplate, game);
+openapi_template_render!(GameTemplate, render_placeholder, placeholder);
+openapi_template_utoipa!(AllGamesTemplate);
+openapi_template_serialize!(AllGamesTemplate, games);
+openapi_template_render!(AllGamesTemplate, render_placeholder, placeholder);
+openapi_template_render!(AllGamesTemplate, render_default, default);
+
+macro_rules! conditional_query {
+    ($condition:expr, $var_name:ident, $true:expr, $false:expr, $then:expr) => {
+        if $condition {
+            let $var_name = $true;
+            $then
+        } else {
+            let $var_name = $false;
+            $then
+        }
+    };
+}
 
 #[utoipa::path(
     get,
@@ -189,16 +266,26 @@ openapi_template!(AllGamesTemplate, games);
                 ([GameModel], example = json!([GameModel::placeholder()]))
             )
         ),
-        (status = "4XX", description = "You did something wrong",
+        (status = UNAUTHORIZED, description = "You aren't logged in",
+            content(
+                (inline(AllGamesTemplate) = "text/html", example = AllGamesTemplate::render_default),
+                ([GameModel], example = json!([]))
+            )
+        ),
+        (status = "4XX", description = "It's your fault",
             content(
                 (Error, example = Error::placeholder),
             )
         ),
-        (status = "5XX", description = "We did something wrong",
+        (status = "5XX", description = "We're having a skill issue",
             content(
                 (Error, example = Error::placeholder),
             )
         ),
+    ),
+    params(
+        ("q" = String, Path, description = "Search query for games"),
+        ("uid" = i64, Path, description = "The user ID to grab games from")
     ),
     security(
         ("basic_auth" = []),
@@ -209,20 +296,79 @@ openapi_template!(AllGamesTemplate, games);
 #[instrument(skip(conn))]
 pub async fn get_all_games(
     DatabaseConnection(mut conn, _, user): DatabaseConnection,
+    embedding_retreiver: EmbeddingRetreiver,
+    Query(search): Query<SearchQuery>,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
-) -> Result<HtmlOrJsonOnce<AllGamesTemplate>, error::Error> {
-    let games = GameModel::query()
-        .load(&mut conn)
-        .await
-        .wrap_err("Failed to get updated games list")
-        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
+    TypedHeader(hx_request): TypedHeader<HxRequest>,
+) -> Result<(StatusCode, HtmlOrJsonOnce<AllGamesTemplate>), error::Error> {
+    let games = conditional_query!(
+        search.q.is_empty(),
+        query_w_search,
+        GameModel::query(),
+        {
+            let embeddings = embedding_retreiver
+                .get_embeddings(&format!("task: search result | query: {}", search.q))
+                .await
+                .wrap_err("Failed to create embeddings from search query")
+                .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(HtmlOrJsonOnce(
-        accept,
-        AllGamesTemplate {
-            games,
-            user_id: user.map(|u| u.id).unwrap_or_default(),
+            GameModel::query().order_by(games::embedding.max_inner_product(embeddings))
         },
+        conditional_query!(
+            search.uid == 0,
+            query_w_uid,
+            query_w_search,
+            query_w_search.filter(games::owned_by.eq(search.uid)),
+            query_w_uid
+                .load(&mut conn)
+                .await
+                .wrap_err("Failed to get updated games list")
+                .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?
+        )
+    );
+
+    // GameModel::query()
+    //     .filter(games::tsembedding.matches(plainto_tsquery(&search.q)))
+    //     .order_by(ts_rank_cd(games::tsembedding, plainto_tsquery(&search.q)).desc())
+    //     .load(&mut conn)
+    //     .await
+    //     .wrap_err("Failed to get updated games list")
+    //     .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?
+
+    // use diesel::sql_types::*;
+    // use pgvector::sql_types::*;
+
+    // GameModel::query()
+    //     .order_by(1 - games::embedding.max_inner_product(embeddings))
+    //     .load(&mut conn)
+    //     .await
+    //     .wrap_err("Failed to get updated games list")
+    //     .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?
+
+    // diesel::sql_query("SELECT * FROM hybrid_search($1, $2, $3)")
+    //     .bind::<Text, _>(search.q) // query_text
+    //     .bind::<Vector, _>(embeddings) // query_embedding
+    //     .bind::<Integer, _>(30) // match_count
+    //     .load::<GameModel>(&mut conn)
+    //     .await
+    //     .wrap_err("Failed to get updated games list")
+    //     .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?
+
+    Ok((
+        if user.is_some() {
+            StatusCode::OK
+        } else {
+            StatusCode::UNAUTHORIZED
+        },
+        HtmlOrJsonOnce(
+            accept,
+            hx_request,
+            AllGamesTemplate {
+                games,
+                search_query: search.q,
+                user_id: user.map(|u| u.id).unwrap_or_default(),
+            },
+        ),
     ))
 }
 
@@ -243,12 +389,12 @@ pub struct GetGameQuery {
                 (GameModel, example = GameModel::placeholder)
             )
         ),
-        (status = "4XX", description = "You did something wrong",
+        (status = "4XX", description = "It's your fault",
             content(
                 (Error, example = Error::placeholder),
             )
         ),
-        (status = "5XX", description = "We did something wrong",
+        (status = "5XX", description = "We're having a skill issue",
             content(
                 (Error, example = Error::placeholder),
             )
@@ -270,17 +416,22 @@ pub async fn get_game(
     Query(edit): Query<GetGameQuery>,
     Path(game_id): Path<i32>,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
+    TypedHeader(hx_request): TypedHeader<HxRequest>,
 ) -> Result<HtmlOrJsonSimple<GameTemplate>, error::Error> {
     let game = GameModel::query()
         .filter(games::dsl::id.eq(game_id))
-        .get_result(&mut conn)
+        .first(&mut conn)
         .await
+        .optional()
         .wrap_err("Failed to get updated games list")
-        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
+        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or_eyre("Couldn't find that game")
+        .with_status_code(StatusCode::NOT_FOUND)?;
 
     let user_id = user.map(|u| u.id);
     Ok(HtmlOrJsonSimple(
         accept,
+        hx_request,
         GameTemplate {
             editing: edit.edit.unwrap_or_default() && user_id == Some(game.user.id),
             user_id: user_id.unwrap_or_default(),
@@ -305,12 +456,12 @@ pub async fn get_game(
                 ([GameModel], example = json!([GameModel::placeholder()]))
             )
         ),
-        (status = "4XX", description = "You did something wrong",
+        (status = "4XX", description = "It's your fault",
             content(
                 (Error, example = Error::placeholder),
             )
         ),
-        (status = "5XX", description = "We did something wrong",
+        (status = "5XX", description = "We're having a skill issue",
             content(
                 (Error, example = Error::placeholder),
             )
@@ -324,33 +475,37 @@ pub async fn get_game(
 )]
 #[instrument(skip(conn))]
 pub async fn add_game(
-    DatabaseConnection(mut conn, _, user): DatabaseConnection,
+    DatabaseConnection(mut conn, jar, user): DatabaseConnection,
+    embedding_retreiver: EmbeddingRetreiver,
+    search: Option<HxQuery<SearchQuery>>,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
+    TypedHeader(hx_request): TypedHeader<HxRequest>,
     JsonOrForm(mut new_game): JsonOrForm<InsertableGame>,
-) -> Result<HtmlOrJsonOnce<AllGamesTemplate>, error::Error> {
+) -> Result<(StatusCode, HtmlOrJsonOnce<AllGamesTemplate>), error::Error> {
     if let Some(user) = user {
         new_game.owned_by = user.id;
+
+        new_game.embedding = embedding_retreiver
+            .get_embeddings(&format!("title: {} | text: {}", new_game.name, new_game))
+            .await
+            .wrap_err("Failed to create embeddings for new games")
+            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
         diesel::insert_into(games::table)
             .values(new_game)
             .execute(&mut conn)
             .await
             .wrap_err("Failed to insert game into database")
-            .with_status_code(StatusCode::BAD_REQUEST)?;
+            .with_status_code(StatusCode::UNPROCESSABLE_ENTITY)?;
 
-        let games = GameModel::query()
-            .load(&mut conn)
-            .await
-            .wrap_err("Failed to get updated games list")
-            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        Ok(HtmlOrJsonOnce(
-            accept,
-            AllGamesTemplate {
-                games,
-                user_id: user.id,
-            },
-        ))
+        get_all_games(
+            DatabaseConnection(conn, jar, Some(user)),
+            embedding_retreiver,
+            Query(search.map(|s| s.0).unwrap_or_default()),
+            TypedHeader(accept),
+            TypedHeader(hx_request),
+        )
+        .await
     } else {
         Err(eyre!("You aren't logged in")).with_status_code(StatusCode::UNAUTHORIZED)
     }
@@ -372,12 +527,12 @@ pub async fn add_game(
                 (GameModel, example = GameModel::placeholder)
             )
         ),
-        (status = "4XX", description = "You did something wrong",
+        (status = "4XX", description = "It's your fault",
             content(
                 (Error, example = Error::placeholder),
             )
         ),
-        (status = "5XX", description = "We did something wrong",
+        (status = "5XX", description = "We're having a skill issue",
             content(
                 (Error, example = Error::placeholder),
             )
@@ -393,12 +548,20 @@ pub async fn add_game(
 #[instrument(skip(conn))]
 pub async fn update_game(
     DatabaseConnection(mut conn, _, user): DatabaseConnection,
+    embedding_retreiver: EmbeddingRetreiver,
     Path(game_id): Path<i32>,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
+    TypedHeader(hx_request): TypedHeader<HxRequest>,
     JsonOrForm(mut new_game): JsonOrForm<InsertableGame>,
 ) -> Result<HtmlOrJsonSimple<GameTemplate>, error::Error> {
     let user_id = user.map(|u| u.id).unwrap_or_default();
     new_game.owned_by = user_id;
+
+    new_game.embedding = embedding_retreiver
+        .get_embeddings(&format!("title: {} | text: {}", new_game.name, new_game))
+        .await
+        .wrap_err("Failed to create embeddings for new games")
+        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     diesel::update(games::table)
         .filter(games::id.eq(game_id))
@@ -406,17 +569,18 @@ pub async fn update_game(
         .execute(&mut conn)
         .await
         .wrap_err("Failed to update game in database")
-        .with_status_code(StatusCode::BAD_REQUEST)?;
+        .with_status_code(StatusCode::UNPROCESSABLE_ENTITY)?;
 
     let updated_game = GameModel::query()
         .filter(games::id.eq(game_id))
-        .get_result(&mut conn)
+        .first(&mut conn)
         .await
         .wrap_err("Failed to get updated game in database")
         .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(HtmlOrJsonSimple(
         accept,
+        hx_request,
         GameTemplate {
             game: updated_game,
             editing: false,
@@ -440,12 +604,12 @@ pub async fn update_game(
                 (GameModel, example = GameModel::placeholder)
             )
         ),
-        (status = "4XX", description = "You did something wrong",
+        (status = "4XX", description = "It's your fault",
             content(
                 (Error, example = Error::placeholder),
             )
         ),
-        (status = "5XX", description = "We did something wrong",
+        (status = "5XX", description = "We're having a skill issue",
             content(
                 (Error, example = Error::placeholder),
             )
@@ -463,6 +627,7 @@ pub async fn patch_game(
     DatabaseConnection(mut conn, _, user): DatabaseConnection,
     Path(game_id): Path<i32>,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
+    TypedHeader(hx_request): TypedHeader<HxRequest>,
     Json(changeset_game): Json<ChangesetGame>,
 ) -> Result<HtmlOrJsonSimple<GameTemplate>, error::Error> {
     diesel::update(games::table)
@@ -471,17 +636,18 @@ pub async fn patch_game(
         .execute(&mut conn)
         .await
         .wrap_err("Failed to update game in database")
-        .with_status_code(StatusCode::BAD_REQUEST)?;
+        .with_status_code(StatusCode::UNPROCESSABLE_ENTITY)?;
 
     let updated_game = GameModel::query()
         .filter(games::id.eq(game_id))
-        .get_result(&mut conn)
+        .first(&mut conn)
         .await
         .wrap_err("Failed to get updated game in database")
         .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(HtmlOrJsonSimple(
         accept,
+        hx_request,
         GameTemplate {
             game: updated_game,
             editing: false,
@@ -502,12 +668,12 @@ pub async fn patch_game(
                 ((), example = "")
             )
         ),
-        (status = "4XX", description = "You did something wrong",
+        (status = "4XX", description = "It's your fault",
             content(
                 (Error, example = Error::placeholder),
             )
         ),
-        (status = "5XX", description = "We did something wrong",
+        (status = "5XX", description = "We're having a skill issue",
             content(
                 (Error, example = Error::placeholder),
             )
@@ -531,7 +697,7 @@ pub async fn delete_game(
         .execute(&mut conn)
         .await
         .wrap_err("Failed to delete game in database")
-        .with_status_code(StatusCode::BAD_REQUEST)?;
+        .with_status_code(StatusCode::UNPROCESSABLE_ENTITY)?;
 
     Ok(())
 }

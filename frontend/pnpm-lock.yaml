@@ -14,12 +14,6 @@ importers:
       htmx.org:
         specifier: ^2.0.8
         version: 2.0.8
-      parcel-packager-sailfish:
-        specifier: link:parcel-packager-sailfish
-        version: link:parcel-packager-sailfish
-      posthtml-lucide:
-        specifier: link:posthtml-lucide
-        version: link:posthtml-lucide
       sweetalert:
         specifier: ^2.1.2
         version: 2.1.2
@@ -48,9 +42,24 @@ importers:
       parcel:
         specifier: ^2.16.3
         version: 2.16.3(@swc/helpers@0.5.18)
+      parcel-packager-sailfish:
+        specifier: link:parcel-packager-sailfish
+        version: link:parcel-packager-sailfish
+      parcel-resolver-ignore:
+        specifier: ^2.2.1
+        version: 2.2.1(@parcel/core@2.16.3(@swc/helpers@0.5.18))
       posthtml:
         specifier: ^0.16.7
         version: 0.16.7
+      posthtml-component:
+        specifier: ^2.2.2
+        version: 2.2.2
+      posthtml-include:
+        specifier: ^2.0.1
+        version: 2.0.1
+      posthtml-lucide:
+        specifier: link:posthtml-lucide
+        version: link:posthtml-lucide
 
   parcel-packager-sailfish:
     dependencies:
@@ -955,6 +964,9 @@ packages:
     resolution: {integrity: sha512-WUj2qlxaQtO4g6Pq5c29GTcWGDyd8itL8zTlipgECz3JesAiiOKotd8JU6otB3PACgG6xkJUyVhboMS+bje/jA==}
     engines: {node: '>=6'}
 
+  fclone@1.0.11:
+    resolution: {integrity: sha512-GDqVQezKzRABdeqflsgMr7ktzgF9CyS+p2oe0jJqUY6izSSbhPIQJDpoU4PtGcD7VPM9xh/dVrTu6z1nwgmEGw==}
+
   fdir@6.5.0:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
     engines: {node: '>=12.0.0'}
@@ -997,6 +1009,9 @@ packages:
   import-without-cache@0.2.5:
     resolution: {integrity: sha512-B6Lc2s6yApwnD2/pMzFh/d5AVjdsDXjgkeJ766FmFuJELIGHNycKRj+l3A39yZPM4CchqNCB4RITEAYB1KUM6A==}
     engines: {node: '>=20.19.0'}
+
+  inline-style-parser@0.2.7:
+    resolution: {integrity: sha512-Nb2ctOyNR8DqQoR0OwRG95uNWIC0C1lCgf5Naz5H6Ji72KZ8OcFZLz2P5sNgwlyoJ8Yif11oMuYs5pBQa86csA==}
 
   is-extglob@2.1.1:
     resolution: {integrity: sha512-SbKbANkN603Vi4jEZv49LeVJMn4yGwsbzZworEoyEiutsN3nJYdbO36zfhGJ6QEDpOZIFkDtnq5JRxmvl3jsoQ==}
@@ -1093,6 +1108,9 @@ packages:
     resolution: {integrity: sha512-9bMdFfc80S+vSldBmG3HOuLVHnxRdNTlpzR6QDnzqCQtCzGUEAGTzBKYMeIM+I/sU4oZfgbcbS7X7F65/z/oxQ==}
     hasBin: true
 
+  lodash@4.17.23:
+    resolution: {integrity: sha512-LgVTMpQtIopCi79SJeDiP0TfWi5CNEc/L/aRdTh3yIvmZXTnheWpKjSZhnvMl8iXbC1tFg9gdHHDMLoV7CnG+w==}
+
   lucide-static@0.556.0:
     resolution: {integrity: sha512-AD0WHIYZgRvbPrdfMdAaHYTDfSlEHYSry9sh4faS14malHdsPelnZQ9j/r5M5nCD4pyTsYyAk9DFt+/2FmLSNA==}
 
@@ -1132,6 +1150,10 @@ packages:
   ordered-binary@1.6.1:
     resolution: {integrity: sha512-QkCdPooczexPLiXIrbVOPYkR3VO3T6v2OyKRkR1Xbhpy7/LAVXwahnRCgRp78Oe/Ehf0C/HATAxfSr6eA1oX+w==}
 
+  parcel-resolver-ignore@2.2.1:
+    resolution: {integrity: sha512-1U2+BCisOb1ZVdi/2w3UKXPHxgCL/9jUz1lcUU4i/gRAMBCTXToUNPFmCE1FzNnao7Xp92Dp3CR2Ogedj/BlQQ==}
+    engines: {parcel: '>=2.9.0'}
+
   parcel@2.16.3:
     resolution: {integrity: sha512-N9jnwcTeVEaRjjJCCHmYfPCvjjJeHZuuO50qL4CCNcQX4RjwPuOaDft7hvTT2W8PIb4XhhZKDYB1lstZhXLJRQ==}
     engines: {node: '>= 16.0.0'}
@@ -1149,6 +1171,31 @@ packages:
 
   postcss-value-parser@4.2.0:
     resolution: {integrity: sha512-1NNCs6uurfkVbeXG4S8JFT9t19m45ICnif8zWLd5oPSZ50QnwMfK+H3jv408d4jw/7Bttv5axS5IiHoLaVNHeQ==}
+
+  posthtml-attrs-parser@1.1.2:
+    resolution: {integrity: sha512-9Que9y4k8c33iv8h5QyTfHKlurmsJIscozy7oeFRxuWeX/osXjVGu9o9MKrmo4TI6Vr9a9vh9b4LYXqm3/GvhA==}
+    engines: {node: '>=16.0.0'}
+
+  posthtml-component@2.2.2:
+    resolution: {integrity: sha512-cQUBwziQLnQBnoUd1aqPvgZAeN2ocQrU7ympaViE2RiFUfP7QWKQ7VQ2QbZk659wkGh6ZVsm3a/GmQF7VzrmHw==}
+    engines: {node: '>=18'}
+
+  posthtml-expressions@1.11.4:
+    resolution: {integrity: sha512-tJI6KhKLcePRO0/i4d01MNXfcaBa2jIu4MuVLixvGwCRzxdY2D7LLm17ijNyQNQu3xOhCffBLtUMju0K64smmQ==}
+    engines: {node: '>=10'}
+
+  posthtml-include@2.0.1:
+    resolution: {integrity: sha512-1YXy4QWeJldosTKLPz6ecbI4e26jHmo3R97NNTKMQqITvZOY025+yvX/RUgvcD1VghLeACs0Y2P3GjtJo5s27Q==}
+    engines: {node: '>=12'}
+
+  posthtml-match-helper@1.0.4:
+    resolution: {integrity: sha512-Tj9orTIBxHdnraCxoEGjoizsFsTGvukzwcuhOjYQGmDG6gTlaRbMrGgi1J+FwKTN8hsCQENHYY0Deqs9a89BVg==}
+    peerDependencies:
+      posthtml: '>=0.5.0'
+
+  posthtml-parser@0.10.2:
+    resolution: {integrity: sha512-PId6zZ/2lyJi9LiKfe+i2xv57oEjJgWbsHGGANwos5AvdQp98i6AtamAl8gzSVFGfQ43Glb5D614cvZf012VKg==}
+    engines: {node: '>=12'}
 
   posthtml-parser@0.11.0:
     resolution: {integrity: sha512-QecJtfLekJbWVo/dMAA+OSwY79wpRmbqS5TeXvXSX+f0c6pW4/SE6inzZ2qkU7oAMCPqIDkZDvd/bQsSFUnKyw==}
@@ -1226,6 +1273,9 @@ packages:
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
+
+  style-to-object@1.0.14:
+    resolution: {integrity: sha512-LIN7rULI0jBscWQYaSswptyderlarFkjQ+t79nzty8tcIAceVomEVlLzH5VP4Cmsv6MtKhs7qaAiwlcp+Mgaxw==}
 
   supports-color@7.2.0:
     resolution: {integrity: sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw==}
@@ -2356,6 +2406,8 @@ snapshots:
 
   escalade@3.2.0: {}
 
+  fclone@1.0.11: {}
+
   fdir@6.5.0(picomatch@4.0.3):
     optionalDependencies:
       picomatch: 4.0.3
@@ -2393,6 +2445,8 @@ snapshots:
   immutable@5.1.4: {}
 
   import-without-cache@0.2.5: {}
+
+  inline-style-parser@0.2.7: {}
 
   is-extglob@2.1.1: {}
 
@@ -2470,6 +2524,8 @@ snapshots:
       '@lmdb/lmdb-linux-x64': 2.8.5
       '@lmdb/lmdb-win32-x64': 2.8.5
 
+  lodash@4.17.23: {}
+
   lucide-static@0.556.0: {}
 
   lucide@0.556.0: {}
@@ -2511,6 +2567,13 @@ snapshots:
 
   ordered-binary@1.6.1: {}
 
+  parcel-resolver-ignore@2.2.1(@parcel/core@2.16.3(@swc/helpers@0.5.18)):
+    dependencies:
+      '@parcel/plugin': 2.16.3(@parcel/core@2.16.3(@swc/helpers@0.5.18))
+    transitivePeerDependencies:
+      - '@parcel/core'
+      - napi-wasm
+
   parcel@2.16.3(@swc/helpers@0.5.18):
     dependencies:
       '@parcel/config-default': 2.16.3(@parcel/core@2.16.3(@swc/helpers@0.5.18))(@swc/helpers@0.5.18)
@@ -2539,6 +2602,40 @@ snapshots:
   picomatch@4.0.3: {}
 
   postcss-value-parser@4.2.0: {}
+
+  posthtml-attrs-parser@1.1.2: {}
+
+  posthtml-component@2.2.2:
+    dependencies:
+      lodash: 4.17.23
+      posthtml: 0.16.7
+      posthtml-attrs-parser: 1.1.2
+      posthtml-expressions: 1.11.4
+      posthtml-parser: 0.12.1
+      posthtml-render: 3.0.0
+      style-to-object: 1.0.14
+
+  posthtml-expressions@1.11.4:
+    dependencies:
+      fclone: 1.0.11
+      posthtml: 0.16.7
+      posthtml-match-helper: 1.0.4(posthtml@0.16.7)
+      posthtml-parser: 0.10.2
+      posthtml-render: 3.0.0
+
+  posthtml-include@2.0.1:
+    dependencies:
+      posthtml: 0.16.7
+      posthtml-expressions: 1.11.4
+      posthtml-parser: 0.11.0
+
+  posthtml-match-helper@1.0.4(posthtml@0.16.7):
+    dependencies:
+      posthtml: 0.16.7
+
+  posthtml-parser@0.10.2:
+    dependencies:
+      htmlparser2: 7.2.0
 
   posthtml-parser@0.11.0:
     dependencies:
@@ -2617,6 +2714,10 @@ snapshots:
   semver@7.7.3: {}
 
   source-map-js@1.2.1: {}
+
+  style-to-object@1.0.14:
+    dependencies:
+      inline-style-parser: 0.2.7
 
   supports-color@7.2.0:
     dependencies:

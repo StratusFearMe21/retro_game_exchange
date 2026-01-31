@@ -48,6 +48,9 @@ RUN cargo build --release --bin retro-game-exchange
 # We do not need the Rust toolchain to run the binary!
 FROM debian:trixie-slim AS runtime
 WORKDIR /app
+RUN apt-get update; \
+  apt-get upgrade -y; \
+  apt-get install curl -y
 COPY --from=builder-rs /app/target/release/retro-game-exchange /usr/local/bin
 COPY --from=builder-js /app/frontend/dist frontend/dist
 

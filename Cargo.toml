@@ -4,28 +4,39 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aws-lc-rs = "1.15.4"
 axum = { version = "0.8.6", features = ["macros"] }
 axum-extra = { version = "0.12.5", features = ["typed-header", "cookie"] }
+base64 = "0.22.1"
 biome_formatter = { git = "https://github.com/biomejs/biome", version = "0.5.7" }
 biome_html_formatter = { git = "https://github.com/biomejs/biome", version = "0.0.0" }
 biome_html_parser = { git = "https://github.com/biomejs/biome", version = "0.0.1" }
-blake3 = "1.8.3"
+bytemuck = { version = "1.24.0", features = ["min_const_generics", "must_cast"] }
 clap = { version = "4.5.51", features = ["derive", "env"] }
 color-eyre = "0.6.5"
 diesel = "2.3.5"
 diesel-async = { version = "0.7.4", features = ["bb8", "migrations", "postgres"] }
 diesel-derive-enum = { version = "3.0.0-beta.1", features = ["postgres"] }
+diesel_full_text_search = "2.3.0"
 diesel_migrations = "2.3.1"
 dotenvy = "0.15.7"
+futures-util = "0.3.31"
+gethostname = "1.1.0"
+jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
+nalgebra = { version = "0.34.1", features = ["serde-serialize"] }
+pgvector = { version = "0.4.1", features = ["diesel"] }
+pin-project-lite = "0.2.16"
+reqwest = { version = "0.13.1", default-features = false, features = ["json"] }
 sailfish = "0.10.1"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 serde_urlencoded = "0.7.1"
 serde_with = "3.16.1"
 supports-color = "3.0.2"
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "signal"] }
 toml = { version = "0.9.8", features = ["serde"] }
 tower = "0.5.2"
-tower-http = { version = "0.6.6", features = ["catch-panic", "fs", "trace"] }
+tower-http = { version = "0.6.6", features = ["catch-panic", "fs", "set-header", "trace", "compression-br", "compression-gzip"] }
 tracing = "0.1.41"
 tracing-error = "0.2.1"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
