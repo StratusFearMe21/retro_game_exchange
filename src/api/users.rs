@@ -2,7 +2,7 @@ use axum::{Json, extract::Path, http::StatusCode};
 use color_eyre::eyre::{Context, OptionExt};
 use diesel::{ExpressionMethods, HasQuery, OptionalExtension, query_dsl::methods::FilterDsl};
 use diesel_async::RunQueryDsl;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use tracing::instrument;
 use utoipa::ToSchema;
 
@@ -35,6 +35,13 @@ pub struct UserClaims {
     pub exp: u64,
     #[serde(flatten)]
     pub user: User,
+}
+
+pub fn serialize_user_id<S>(user: &User, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&format!("/users/{}", user.id))
 }
 
 #[utoipa::path(

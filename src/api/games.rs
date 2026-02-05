@@ -12,13 +12,17 @@ use diesel_async::RunQueryDsl;
 use diesel_derive_enum::DbEnum;
 use pgvector::VectorExpressionMethods;
 use sailfish::{TemplateOnce, TemplateSimple};
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use utoipa::ToSchema;
 
 use crate::{
     Placeholder, SearchQuery,
-    api::{auth::pool::DatabaseConnection, users::User},
+    api::{
+        auth::pool::DatabaseConnection,
+        users::{User, serialize_user_id},
+    },
+    conditional_query,
     embeddings::EmbeddingRetreiver,
     error::{self, Error, WithStatusCode},
     html_or_json::{HtmlOrJsonHeader, HtmlOrJsonOnce, HtmlOrJsonSimple},
@@ -128,13 +132,6 @@ pub struct GameModel {
     user: User,
 }
 
-fn serialize_user_id<S>(user: &User, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str(&format!("/users/{}", user.id))
-}
-
 #[derive(Clone, Copy, DbEnum, ToSchema, Deserialize, Serialize, Debug, PartialEq)]
 #[db_enum(existing_type_path = "sql_types::Condition")]
 pub enum Condition {
@@ -242,18 +239,6 @@ openapi_template_serialize!(AllGamesTemplate, games);
 openapi_template_render!(AllGamesTemplate, render_placeholder, placeholder);
 openapi_template_render!(AllGamesTemplate, render_default, default);
 
-macro_rules! conditional_query {
-    ($condition:expr, $var_name:ident, $true:expr, $false:expr, $then:expr) => {
-        if $condition {
-            let $var_name = $true;
-            $then
-        } else {
-            let $var_name = $false;
-            $then
-        }
-    };
-}
-
 #[utoipa::path(
     get,
     path = "/games",
@@ -284,8 +269,8 @@ macro_rules! conditional_query {
         ),
     ),
     params(
-        ("q" = String, Path, description = "Search query for games"),
-        ("uid" = i64, Path, description = "The user ID to grab games from")
+        ("q" = String, Query, description = "Search query for games"),
+        ("uid" = i64, Query, description = "The user ID to grab games from")
     ),
     security(
         ("basic_auth" = []),

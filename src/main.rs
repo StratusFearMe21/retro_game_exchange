@@ -149,6 +149,20 @@ macro_rules! openapi_template_serialize {
 
 pub(crate) use openapi_template_serialize;
 
+macro_rules! conditional_query {
+    ($condition:expr, $var_name:ident, $true:expr, $false:expr, $then:expr) => {
+        if $condition {
+            let $var_name = $true;
+            $then
+        } else {
+            let $var_name = $false;
+            $then
+        }
+    };
+}
+
+pub(crate) use conditional_query;
+
 use crate::{
     api::auth::{JWT_HEADER, pool::Pool},
     embeddings::EmbeddingRetreiver,
@@ -243,8 +257,9 @@ async fn main() -> eyre::Result<()> {
         .display_env_section(false)
         .install()?;
 
-    let mut config = match std::fs::read_to_string("config.toml") {
-        Ok(file) => toml::from_str(&file).wrap_err("Failed to deserialize config file")?,
+    let mut config = match std::fs::read_to_string("config.tson") {
+        Ok(file) => tysonscript_object_notation::from_str(&file)
+            .wrap_err("Failed to deserialize config file")?,
         Err(e) => {
             eprintln!("Failed to open config file: {}", e);
             eprintln!("Using default config");
@@ -392,6 +407,11 @@ async fn main() -> eyre::Result<()> {
             api::games::delete_game
         ))
         .routes(routes!(api::users::get_user))
+        .routes(routes!(
+            api::offers::get_offers,
+            api::offers::offer_game,
+            api::offers::patch_offer
+        ))
         .split_for_parts();
 
     let (auth_router, auth_api) = router

@@ -4,6 +4,10 @@ pub mod sql_types {
     #[derive(diesel::query_builder::QueryId, Clone, diesel::sql_types::SqlType)]
     #[diesel(postgres_type(name = "condition"))]
     pub struct Condition;
+
+    #[derive(diesel::query_builder::QueryId, Clone, diesel::sql_types::SqlType)]
+    #[diesel(postgres_type(name = "offer_status"))]
+    pub struct OfferStatus;
 }
 
 diesel::table! {
@@ -29,6 +33,20 @@ diesel::table! {
     use diesel::sql_types::*;
     use pgvector::sql_types::*;
     use diesel_full_text_search::*;
+    use super::sql_types::OfferStatus;
+
+    offers (offer_up, for_game) {
+        offer_up -> Int4,
+        for_game -> Int4,
+        made_by -> Int4,
+        offer_status -> OfferStatus,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use pgvector::sql_types::*;
+    use diesel_full_text_search::*;
 
     users (id) {
         id -> Int4,
@@ -46,5 +64,6 @@ diesel::table! {
 }
 
 diesel::joinable!(games -> users (owned_by));
+diesel::joinable!(offers -> users (made_by));
 
-diesel::allow_tables_to_appear_in_same_query!(games, users,);
+diesel::allow_tables_to_appear_in_same_query!(games, offers, users,);

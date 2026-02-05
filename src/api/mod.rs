@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod games;
+pub mod offers;
 pub mod users;
 
 use axum::http::StatusCode;

@@ -1,4 +1,22 @@
 _format_version: "3.0"
+
+plugins:
+  - name: prometheus
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      bandwidth_metrics: true
+      upstream_health_metrics: true
+  - name: opentelemetry
+    config:
+      traces_endpoint: http://otel-collector:4319/traces
+      logs_endpoint: http://otel-collector:4319/logs
+      # access_logs_endpoint: http://otel-collector:4319/logs
+      # metrics:
+      #   endpoint: http://otel-collector:4319/metrics
+      # headers:
+      #   X-Auth-Token: secret-token
+
 services:
   - name: web-api-auth-service
     host: web-auth

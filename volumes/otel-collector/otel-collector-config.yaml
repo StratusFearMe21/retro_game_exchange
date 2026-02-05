@@ -1,0 +1,98 @@
+receivers:
+  otlp/automq:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+  otlp/rustfs:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - http://*
+  otlp/kong:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4319
+        cors:
+          allowed_origins:
+            - http://*
+  postgresql:
+    endpoint: db:5432
+    transport: tcp
+    username: otelu
+    password: ${env:POSTGRESQL_PASSWORD}
+    databases:
+      - docker
+    collection_interval: 10s
+    tls:
+      insecure: true
+    events:
+      db.server.query_sample:
+        enabled: true
+      db.server.top_query:
+        enabled: true
+    metrics:
+      postgresql.tup_fetched:
+        enabled: true
+      postgresql.tup_returned:
+        enabled: true
+      postgresql.tup_inserted:
+        enabled: true
+      postgresql.tup_updated:
+        enabled: true
+      postgresql.tup_deleted:
+        enabled: true
+      postgresql.deadlocks:
+        enabled: true
+      postgresql.blks_hit:
+        enabled: true
+      postgresql.blks_read:
+        enabled: true
+    # query_sample_collection:
+    #   max_rows_per_query: 100
+    # top_query_collection:
+    #   max_rows_per_query: 100
+    #   top_n_query: 100
+  # prometheus/collector:
+  #   config:
+  #     scrape_configs:
+  #       - job_name: "kong"
+  #         scrape_interval: 15s
+  #         static_configs:
+  #           - targets: ["kong:8100"]
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+processors:
+  batch:
+
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:8889" # Port where Prometheus will pull data from
+    resource_to_telemetry_conversion:
+      enabled: true
+
+service:
+  extensions: [health_check]
+  pipelines:
+    metrics:
+      receivers: [postgresql, otlp/automq, otlp/rustfs]
+      processors: [batch]
+      exporters: [prometheus]
+  telemetry:
+    resource:
+      service.name: grafana-opentelemetry/metrics
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+                with_resource_constant_labels:
+                  included:
+                    - service.name

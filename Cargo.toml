@@ -34,12 +34,12 @@ serde_urlencoded = "0.7.1"
 serde_with = "3.16.1"
 supports-color = "3.0.2"
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "signal"] }
-toml = { version = "0.9.8", features = ["serde"] }
 tower = "0.5.2"
 tower-http = { version = "0.6.6", features = ["catch-panic", "fs", "set-header", "trace", "compression-br", "compression-gzip"] }
 tracing = "0.1.41"
 tracing-error = "0.2.1"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tysonscript-object-notation = { git = "https://github.com/StratusFearMe21/tysonscript-object-notation/", version = "0.1.0" }
 utoipa = { version = "5.4.0", features = ["axum_extras"] }
 utoipa-axum = "0.2.0"
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }

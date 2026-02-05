@@ -51,17 +51,156 @@ services:
     depends_on:
       web:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     environment:
       KONG_PREFIX: /var/run/kong
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.yml
       KONG_DNS_ORDER: LAST,A,CNAME
-      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,request-termination,ip-restriction
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,request-termination,ip-restriction,opentelemetry,prometheus
       KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
       KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+      KONG_TRACING_INSTRUMENTATIONS: all
+      KONG_TRACING_SAMPLING_RATE: 1.0
+      KONG_STATUS_LISTEN: 0.0.0.0:8100
     # https://unix.stackexchange.com/a/294837
     # entrypoint: bash -c 'eval "echo \"$$(cat /kong/declarative/temp.yml)\"" > /kong/declarative/kong.yml && /docker-entrypoint.sh kong docker-start'
   
+  # RustFS main service
+  # https://github.com/rustfs/rustfs/blob/main/docker-compose.yml
+  rustfs:
+    security_opt:
+      - "no-new-privileges:true"
+    image: rustfs/rustfs:latest
+    ports:
+      # - "9000:9000" # S3 API port
+      - "9001:9001" # Console port
+    environment:
+      - RUSTFS_VOLUMES=/data/rustfs{0..3} # Define 4 storage volumes
+      - RUSTFS_ADDRESS=0.0.0.0:9000
+      - RUSTFS_CONSOLE_ADDRESS=0.0.0.0:9001
+      - RUSTFS_CONSOLE_ENABLE=true
+      - RUSTFS_CORS_ALLOWED_ORIGINS=*
+      - RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS=*
+      - RUSTFS_ACCESS_KEY=rustfsadmin
+      - RUSTFS_SECRET_KEY=rustfsadmin
+      - RUSTFS_OBS_LOGGER_LEVEL=debug
+      - RUST_LOG=debug
+      - RUSTFS_OBS_LOG_DIRECTORY=/app/logs
+      - RUSTFS_TLS_PATH=/opt/tls
+      - RUSTFS_OBS_ENDPOINT=http://otel-collector:4318
+    volumes:
+      - ./volumes/rustfs/data/pro:/data
+      - ./volumes/rustfs/logs:/app/logs
+      - ./volumes/rustfs/data/certs/:/opt/tls # TLS configuration, you should create tls directory and put your tls files in it and then specify the path here
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "sh", "-c",
+          "curl -f http://127.0.0.1:9000/health && curl -f http://127.0.0.1:9001/rustfs/console/health"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  rc:
+    image: rustfs/rc:latest
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/rc alias set rustfs http://rustfs:9000 rustfsadmin rustfsadmin) do echo '...waiting...' && sleep 1; done;
+      /usr/bin/rc rm -r --force rustfs/automq-data;
+      /usr/bin/rc rm -r --force rustfs/automq-ops;
+      /usr/bin/rc mb rustfs/automq-data;
+      /usr/bin/rc mb rustfs/automq-ops;
+      /usr/bin/rc anonymous set public rustfs/automq-data;
+      /usr/bin/rc anonymous set public rustfs/automq-ops;
+      tail -f /dev/null
+      "
+
+  automq:
+    image: automqinc/automq:latest
+    stop_grace_period: 1m
+    environment:
+      - KAFKA_S3_ACCESS_KEY=rustfsadmin
+      - KAFKA_S3_SECRET_KEY=rustfsadmin
+      - KAFKA_HEAP_OPTS=-Xms1g -Xmx4g -XX:MetaspaceSize=96m -XX:MaxDirectMemorySize=1G
+      # Replace CLUSTER_ID with a unique base64 UUID using "bin/kafka-storage.sh random-uuid"
+      - CLUSTER_ID=3D4fXN-yS1-vsQ8aJ_q4Mg
+    command:
+      - bash
+      - -c
+      - |
+        /opt/automq/kafka/bin/kafka-server-start.sh \
+        /opt/automq/kafka/config/kraft/server.properties \
+        --override cluster.id=$$CLUSTER_ID \
+        --override node.id=0 \
+        --override controller.quorum.voters=0@automq:9093 \
+        --override controller.quorum.bootstrap.servers=automq:9093 \
+        --override advertised.listeners=PLAINTEXT://automq:9092 \
+        --override s3.telemetry.metrics.exporter.type=otlp \
+        --override s3.telemetry.exporter.otlp.protocol=grpc \
+        --override s3.telemetry.exporter.otlp.endpoint=http://otel-collector:4317 \
+        --override s3.data.buckets='0@s3://automq-data?region=us-east-1&endpoint=http://rustfs:9000&pathStyle=true' \
+        --override s3.ops.buckets='1@s3://automq-ops?region=us-east-1&endpoint=http://rustfs:9000&pathStyle=true' \
+        --override s3.wal.path='0@s3://automq-data?region=us-east-1&endpoint=http://rustfs:9000&pathStyle=true'
+    depends_on:
+      - rustfs
+      - rc
+      - otel-collector
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    environment:
+      POSTGRESQL_PASSWORD: example
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./volumes/otel-collector/otel-collector-config.yaml:/otel-local-config.yaml
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: ["--config=/otel-local-config.yaml"]
+    # healthcheck:
+    #   test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    # ports:
+    #   - "4318:4318"  # OTLP receiver
+
+  prometheus:
+    image: prom/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    ports:
+      - 9090:9090
+    restart: unless-stopped
+    volumes:
+      - ./volumes/prometheus:/etc/prometheus
+      - prom_data:/prometheus
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - 3000:3000
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=grafana
+    volumes:
+      - ./volumes/grafana:/etc/grafana/provisioning/datasources
+      - grafana_data:/var/lib/grafana
+
   web-auth:
     restart: unless-stopped
     depends_on:
@@ -117,4 +256,6 @@ models:
 
 volumes:
   pgdata:
+  prom_data:
+  grafana_data:
 
