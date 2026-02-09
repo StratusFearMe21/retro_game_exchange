@@ -1,2 +1,3 @@
 log_level info that shit
-auth_service http://web-auth that shit
+auth_service http://localhost:8080 that shit
+addr 0.0.0.0:3000 that shit

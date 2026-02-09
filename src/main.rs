@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Display,
     net::{Ipv6Addr, SocketAddr, SocketAddrV6, ToSocketAddrs},
     ops::Deref,
     sync::Arc,
@@ -24,17 +25,20 @@ use color_eyre::{
     eyre::{self, Context, OptionExt, bail},
 };
 use diesel_async::{
-    AsyncMigrationHarness,
-    pooled_connection::{AsyncDieselConnectionManager, bb8},
+    AsyncConnection, AsyncMigrationHarness,
+    pooled_connection::{AsyncDieselConnectionManager, ManagerConfig, bb8},
 };
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
-use gethostname::gethostname;
+use futures_util::FutureExt;
 use jsonwebtoken::{
     DecodingKey, EncodingKey,
     jwk::{Jwk, JwkSet},
 };
+use opentelemetry::trace::TracerProvider;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use pin_project_lite::pin_project;
 use serde::Deserialize;
+use telemetry::init_tracing_provider;
 use tokio::{net::TcpListener, signal};
 use tower::{Layer, Service, ServiceBuilder};
 use tower_http::{
@@ -46,6 +50,7 @@ use tower_http::{
 };
 use tracing::Level;
 use tracing_error::ErrorLayer;
+use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::{
     Path,
@@ -63,6 +68,7 @@ mod error;
 mod html_or_json;
 mod htmx;
 mod json_or_form;
+mod telemetry;
 mod uri_util;
 
 pub mod embeddings;
@@ -167,6 +173,7 @@ use crate::{
     api::auth::{JWT_HEADER, pool::Pool},
     embeddings::EmbeddingRetreiver,
     htmx::{HxLocation, HxRequest},
+    telemetry::{DieselInstrumentation, TelemetryMakeSpan, init_logging_provider},
 };
 
 pub trait Placeholder {
@@ -178,12 +185,47 @@ const fn default_listen_addr() -> SocketAddr {
     SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 3000, 0, 0))
 }
 
-#[derive(ValueEnum, Deserialize, Clone, Copy, Default)]
+#[derive(Debug, ValueEnum, Deserialize, Clone, Copy, Default)]
 #[serde(rename_all = "lowercase")]
 enum ServiceType {
     Auth,
     #[default]
     Main,
+}
+
+impl Display for ServiceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Auth => write!(f, "auth-api"),
+            Self::Main => write!(f, "main-api"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Parser, Deserialize, Default)]
+pub struct EmbeddingModelConfig {
+    #[clap(long, env = "EMBEDDING_MODEL_URL")]
+    #[serde(default)]
+    url: Arc<str>,
+    #[clap(long, env = "EMBEDDING_MODEL_MODEL")]
+    #[serde(default)]
+    model: Arc<str>,
+}
+
+#[derive(Clone, Debug, Parser, Deserialize, Default)]
+pub struct ServiceConfig {
+    #[clap(short, long, value_enum, env = "SERVICE_TYPE")]
+    #[serde(default, rename = "type")]
+    service_type: ServiceType,
+    #[clap(short, long, value_enum, env = "SERVICE_ID")]
+    #[serde(default)]
+    id: String,
+    #[clap(long, env = "AUTH_SERVICE")]
+    #[serde(default)]
+    auth_service: String,
+    #[clap(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
+    #[serde(default)]
+    otlp_endpoint: Option<String>,
 }
 
 #[derive(Parser, Deserialize)]
@@ -199,21 +241,15 @@ struct Cli {
     #[clap(short, long, env = "DATABASE_URL")]
     #[serde(default)]
     db_url: String,
-    #[clap(long, env = "EMBEDDING_MODEL_URL")]
+    #[clap(flatten)]
     #[serde(default)]
-    embedding_model_url: Arc<str>,
-    #[clap(long, env = "EMBEDDING_MODEL_MODEL")]
-    #[serde(default)]
-    embedding_model_model: Arc<str>,
+    embedding_model: EmbeddingModelConfig,
     #[clap(long)]
     #[serde(skip)]
     reembed: bool,
-    #[clap(short, long, value_enum, env = "SERVICE_TYPE")]
+    #[clap(flatten)]
     #[serde(default)]
-    service_type: ServiceType,
-    #[clap(long, env = "AUTH_SERVICE")]
-    #[serde(default)]
-    auth_service: String,
+    service: ServiceConfig,
 }
 
 impl Default for Cli {
@@ -222,11 +258,9 @@ impl Default for Cli {
             log_level: CliLevelFilter::default(),
             addr: default_listen_addr(),
             db_url: String::new(),
-            embedding_model_url: String::new().into(),
-            embedding_model_model: String::new().into(),
+            embedding_model: EmbeddingModelConfig::default(),
             reembed: false,
-            service_type: ServiceType::default(),
-            auth_service: String::new(),
+            service: ServiceConfig::default(),
         }
     }
 }
@@ -234,8 +268,7 @@ impl Default for Cli {
 #[derive(Clone)]
 pub struct ApiState {
     pub pool: Pool,
-    pub embedding_model_url: Arc<str>,
-    pub embedding_model_model: Arc<str>,
+    pub embedding_model: EmbeddingModelConfig,
     pub reqwest_client: reqwest::Client,
     pub encoding_key: Option<EncodingKey>,
     pub decoding_keys: Arc<HashMap<String, DecodingKey>>,
@@ -268,18 +301,39 @@ async fn main() -> eyre::Result<()> {
     };
     config.update_from(std::env::args_os());
 
+    let tracer_provider = init_tracing_provider(&config.service);
+    let logger_provider = init_logging_provider(&config.service);
+    let tracer = tracer_provider.tracer("tracing-retro-game-exchange");
+
     tracing_subscriber::registry()
         .with(ErrorLayer::default())
         .with(config.log_level.0)
         .with(tracing_subscriber::fmt::layer().with_ansi(color))
+        .with(OpenTelemetryLayer::new(tracer))
+        .with(OpenTelemetryTracingBridge::new(&logger_provider))
         .init();
 
     if config.db_url.is_empty() {
         bail!("db_url is not set");
     }
 
+    let mut manager_config = ManagerConfig::default();
+    manager_config.custom_setup = Box::new(|url| {
+        diesel_async::AsyncPgConnection::establish(url)
+            .map(|conn| {
+                conn.map(|mut c| {
+                    c.set_instrumentation(DieselInstrumentation::default());
+                    c
+                })
+            })
+            .boxed()
+    });
+
     let db_config =
-        AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new(config.db_url);
+        AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new_with_config(
+            config.db_url,
+            manager_config,
+        );
     let pool = bb8::Pool::builder()
         .build(db_config)
         .await
@@ -299,8 +353,7 @@ async fn main() -> eyre::Result<()> {
             pool,
             EmbeddingRetreiver {
                 reqwest_client: reqwest::Client::new(),
-                embedding_model_url: Arc::clone(&config.embedding_model_url),
-                embedding_model_model: Arc::clone(&config.embedding_model_model),
+                embedding_model: config.embedding_model.clone(),
             },
         )
         .await?;
@@ -309,7 +362,7 @@ async fn main() -> eyre::Result<()> {
 
     let reqwest_client = reqwest::Client::new();
 
-    let (encoding_key, jwk_set) = match config.service_type {
+    let (encoding_key, jwk_set) = match config.service.service_type {
         ServiceType::Auth => {
             let jwt_key_pair = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_FIXED_SIGNING)
                 .wrap_err("Failed to generate ECDSA keypair")?;
@@ -324,7 +377,7 @@ async fn main() -> eyre::Result<()> {
             let mut jwk = Jwk::from_encoding_key(&encoding_key, jsonwebtoken::Algorithm::ES256)
                 .wrap_err("Failed to create JWK from JWT EncodingKey")?;
 
-            let key_id = Some(gethostname().into_string().unwrap());
+            let key_id = Some(config.service.id.clone());
             jwk.common.key_id = key_id.clone();
 
             JWT_HEADER
@@ -341,9 +394,11 @@ async fn main() -> eyre::Result<()> {
             (Some(encoding_key), jwk_set)
         }
         ServiceType::Main => {
-            let jwks_url =
-                reqwest::Url::parse(&format!("{}/.well-known/jwks.json", config.auth_service))
-                    .wrap_err("Failed to parse auth_service as URL")?;
+            let jwks_url = reqwest::Url::parse(&format!(
+                "{}/.well-known/jwks.json",
+                config.service.auth_service
+            ))
+            .wrap_err("Failed to parse auth_service as URL")?;
 
             let auth_service_host = jwks_url
                 .host_str()
@@ -369,7 +424,7 @@ async fn main() -> eyre::Result<()> {
                                     .await
                                     .wrap_err("Failed to deserialize JWKs from auth service")?;
 
-                                Ok::<_, eyre::Report>(jwks.keys.remove(0))
+                                Ok::<_, eyre::Report>(jwks.keys.swap_remove(0))
                             }
                         }),
                 )
@@ -424,7 +479,7 @@ async fn main() -> eyre::Result<()> {
         ))
         .split_for_parts();
 
-    let (router, mut api) = match config.service_type {
+    let (router, mut api) = match config.service.service_type {
         ServiceType::Main => (main_router, main_api.merge_from(auth_api)),
         ServiceType::Auth => (auth_router, auth_api.merge_from(main_api)),
     };
@@ -463,49 +518,48 @@ async fn main() -> eyre::Result<()> {
             ),
         );
     });
-    let app = router
-        .route(
-            "/.well-known/jwks.json",
-            get(move || async move { Json(jwk_set) }),
-        )
-        .merge(SwaggerUi::new("/swagger").url("/api/openapi.json", api))
-        .fallback_service(
-            ServiceBuilder::new()
-                .layer(HxRequestLayer)
-                .layer(SetResponseHeaderLayer::appending(
-                    VARY,
-                    HeaderValue::from(ACCEPT_ENCODING),
-                ))
-                .service(
-                    ServeDir::new("frontend/dist")
-                        .precompressed_gzip()
-                        .precompressed_br(),
-                ),
-        )
-        .layer(
-            ServiceBuilder::new()
-                .layer(CatchPanicLayer::custom(error::PanicHandler))
-                .layer(RedirectIfUnauthorizedLayer::to(
-                    "/login.html",
-                    [
-                        api::auth::__path_login::path(),
-                        api::auth::__path_signup::path(),
-                    ],
-                ))
-                .layer(CompressionLayer::new().br(true).gzip(true))
-                .layer(
-                    TraceLayer::new_for_http()
-                        .make_span_with(DefaultMakeSpan::new().level(Level::INFO)),
-                ),
-        )
-        .with_state(ApiState {
-            pool: Pool::new(pool),
-            embedding_model_url: Arc::clone(&config.embedding_model_url),
-            embedding_model_model: Arc::clone(&config.embedding_model_model),
-            reqwest_client,
-            encoding_key,
-            decoding_keys,
-        });
+    let app =
+        router
+            .route(
+                "/.well-known/jwks.json",
+                get(move || async move { Json(jwk_set) }),
+            )
+            .merge(SwaggerUi::new("/swagger").url("/api/openapi.json", api))
+            .fallback_service(
+                ServiceBuilder::new()
+                    .layer(HxRequestLayer)
+                    .layer(SetResponseHeaderLayer::appending(
+                        VARY,
+                        HeaderValue::from(ACCEPT_ENCODING),
+                    ))
+                    .service(
+                        ServeDir::new("frontend/dist")
+                            .precompressed_gzip()
+                            .precompressed_br(),
+                    ),
+            )
+            .layer(
+                ServiceBuilder::new()
+                    .layer(CatchPanicLayer::custom(error::PanicHandler))
+                    .layer(RedirectIfUnauthorizedLayer::to(
+                        "/login.html",
+                        [
+                            api::auth::__path_login::path(),
+                            api::auth::__path_signup::path(),
+                        ],
+                    ))
+                    .layer(CompressionLayer::new().br(true).gzip(true))
+                    .layer(TraceLayer::new_for_http().make_span_with(TelemetryMakeSpan(
+                        DefaultMakeSpan::new().level(Level::INFO),
+                    ))),
+            )
+            .with_state(ApiState {
+                pool: Pool::new(pool),
+                embedding_model: config.embedding_model.clone(),
+                reqwest_client,
+                encoding_key,
+                decoding_keys,
+            });
 
     let listener = TcpListener::bind(config.addr)
         .await
@@ -514,7 +568,14 @@ async fn main() -> eyre::Result<()> {
     axum::serve(listener, app.into_make_service())
         .with_graceful_shutdown(shutdown_signal())
         .await
-        .wrap_err("Failed to serve make service")
+        .wrap_err("Failed to serve make service")?;
+
+    tracer_provider
+        .shutdown()
+        .wrap_err("Failed to shut down tracing service")?;
+    logger_provider
+        .shutdown()
+        .wrap_err("Failed to shut down logging service")
 }
 
 pub struct HxRequestLayer;

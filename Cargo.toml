@@ -21,9 +21,13 @@ diesel_full_text_search = "2.3.0"
 diesel_migrations = "2.3.1"
 dotenvy = "0.15.7"
 futures-util = "0.3.31"
-gethostname = "1.1.0"
 jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
 nalgebra = { version = "0.34.1", features = ["serde-serialize"] }
+opentelemetry = "0.31.0"
+opentelemetry-appender-tracing = "0.31.1"
+opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "gzip-tonic"] }
+opentelemetry-semantic-conventions = { version = "0.31.0", features = ["semconv_experimental"] }
+opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
 pgvector = { version = "0.4.1", features = ["diesel"] }
 pin-project-lite = "0.2.16"
 reqwest = { version = "0.13.1", default-features = false, features = ["json"] }
@@ -38,6 +42,7 @@ tower = "0.5.2"
 tower-http = { version = "0.6.6", features = ["catch-panic", "fs", "set-header", "trace", "compression-br", "compression-gzip"] }
 tracing = "0.1.41"
 tracing-error = "0.2.1"
+tracing-opentelemetry = "0.32.1"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 tysonscript-object-notation = { git = "https://github.com/StratusFearMe21/tysonscript-object-notation/", version = "0.1.0" }
 utoipa = { version = "5.4.0", features = ["axum_extras"] }

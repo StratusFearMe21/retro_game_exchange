@@ -3,15 +3,12 @@ pub mod games;
 pub mod offers;
 pub mod users;
 
-use axum::http::StatusCode;
-use color_eyre::eyre::{Context, eyre};
-use diesel_async::RunQueryDsl;
 use tracing::instrument;
 
 use crate::{
     Placeholder,
     api::auth::pool::DatabaseConnection,
-    error::{self, Error, WithStatusCode},
+    error::{self, Error},
 };
 
 #[utoipa::path(
@@ -33,20 +30,19 @@ use crate::{
         ),
     )
 )]
-#[instrument(skip(conn))]
-pub async fn health(
-    DatabaseConnection(mut conn, _, user): DatabaseConnection,
-) -> Result<(), error::Error> {
-    let rows = diesel::sql_query("SELECT current_timestamp - pg_postmaster_start_time()")
-        .execute(&mut conn)
-        .await
-        .wrap_err("Failed to get current timestamp list")
-        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
+#[instrument]
+pub async fn health(_: DatabaseConnection) -> Result<(), error::Error> {
+    // let rows = diesel::sql_query("SELECT $1")
+    //     .bind::<sql_types::Integer, _>(1)
+    //     .execute(&mut conn)
+    //     .await
+    //     .wrap_err("Failed to get current timestamp list")
+    //     .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    if rows < 1 {
-        return Err(eyre!("Postgres returned no rows for current uptime"))
-            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR);
-    }
+    // if rows < 1 {
+    //     return Err(eyre!("Postgres returned no rows for current uptime"))
+    //         .with_status_code(StatusCode::INTERNAL_SERVER_ERROR);
+    // }
 
     Ok(())
 }

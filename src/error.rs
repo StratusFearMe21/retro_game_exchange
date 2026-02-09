@@ -88,6 +88,7 @@ impl Debug for Error {
 
 impl IntoResponse for Error {
     fn into_response(self) -> axum::response::Response {
+        tracing::error!(status_code = self.status_code.as_u16(), "{}", self.error);
         (self.status_code, Json(self)).into_response()
     }
 }

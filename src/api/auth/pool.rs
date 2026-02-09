@@ -136,7 +136,6 @@ impl FromRequestParts<ApiState> for DatabaseConnection {
             }
         })
         {
-            tracing::debug!(token = bearer_auth.token());
             let header = jsonwebtoken::decode_header(bearer_auth.token())
                 .wrap_err("Failed to decode JWT header")
                 .with_status_code_and_actions(StatusCode::BAD_REQUEST, Actions::sign_out())?;

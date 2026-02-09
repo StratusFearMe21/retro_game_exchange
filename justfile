@@ -15,3 +15,13 @@ run configuration="debug": frontend (backend configuration)
 
 up:
     docker compose up --build -d
+
+clear-telemetry:
+    -docker volume rm retro-game-exchange_prom_data
+    -docker volume rm retro-game-exchange_tempo_data
+    docker compose up -d rustfs rc
+    docker compose exec rc /usr/bin/rc rm -r --force rustfs/tempo;
+    docker compose exec rc /usr/bin/rc rm -r --force rustfs/loki-data;
+    docker compose exec rc /usr/bin/rc rm -r --force rustfs/loki-ruler;
+    docker compose down
+

@@ -48,12 +48,14 @@ RUN cargo build --release --bin retro-game-exchange
 # We do not need the Rust toolchain to run the binary!
 FROM debian:trixie-slim AS runtime
 WORKDIR /app
+COPY ./docker/docker-entrypoint.sh /usr/local/bin
 RUN apt-get update; \
   apt-get upgrade -y; \
-  apt-get install curl -y
+  apt-get install curl dnsutils -y
 COPY --from=builder-rs /app/target/release/retro-game-exchange /usr/local/bin
 COPY --from=builder-js /app/frontend/dist frontend/dist
 
 EXPOSE 3000
 
-ENTRYPOINT ["/usr/local/bin/retro-game-exchange"]
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/docker-entrypoint.sh"]
+CMD ["/usr/local/bin/retro-game-exchange"]

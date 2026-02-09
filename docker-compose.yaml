@@ -85,8 +85,7 @@ services:
       - RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS=*
       - RUSTFS_ACCESS_KEY=rustfsadmin
       - RUSTFS_SECRET_KEY=rustfsadmin
-      - RUSTFS_OBS_LOGGER_LEVEL=debug
-      - RUST_LOG=debug
+      - RUSTFS_OBS_LOGGER_LEVEL=info
       - RUSTFS_OBS_LOG_DIRECTORY=/app/logs
       - RUSTFS_TLS_PATH=/opt/tls
       - RUSTFS_OBS_ENDPOINT=http://otel-collector:4318
@@ -115,15 +114,21 @@ services:
     depends_on:
       rustfs:
         condition: service_healthy
+    # /usr/bin/rc rm -r --force rustfs/automq-data;
+    # /usr/bin/rc rm -r --force rustfs/automq-ops;
     entrypoint: >
       /bin/sh -c "
       until (/usr/bin/rc alias set rustfs http://rustfs:9000 rustfsadmin rustfsadmin) do echo '...waiting...' && sleep 1; done;
-      /usr/bin/rc rm -r --force rustfs/automq-data;
-      /usr/bin/rc rm -r --force rustfs/automq-ops;
       /usr/bin/rc mb rustfs/automq-data;
       /usr/bin/rc mb rustfs/automq-ops;
+      /usr/bin/rc mb rustfs/tempo;
+      /usr/bin/rc mb rustfs/loki-data;
+      /usr/bin/rc mb rustfs/loki-ruler;
       /usr/bin/rc anonymous set public rustfs/automq-data;
       /usr/bin/rc anonymous set public rustfs/automq-ops;
+      /usr/bin/rc anonymous set public rustfs/tempo;
+      /usr/bin/rc anonymous set public rustfs/loki-data;
+      /usr/bin/rc anonymous set public rustfs/loki-ruler;
       tail -f /dev/null
       "
 
@@ -150,6 +155,7 @@ services:
         --override s3.telemetry.metrics.exporter.type=otlp \
         --override s3.telemetry.exporter.otlp.protocol=grpc \
         --override s3.telemetry.exporter.otlp.endpoint=http://otel-collector:4317 \
+        --override s3.object.log.enable=true \
         --override s3.data.buckets='0@s3://automq-data?region=us-east-1&endpoint=http://rustfs:9000&pathStyle=true' \
         --override s3.ops.buckets='1@s3://automq-ops?region=us-east-1&endpoint=http://rustfs:9000&pathStyle=true' \
         --override s3.wal.path='0@s3://automq-data?region=us-east-1&endpoint=http://rustfs:9000&pathStyle=true'
@@ -178,10 +184,59 @@ services:
     # ports:
     #   - "4318:4318"  # OTLP receiver
 
+  tempo:
+    image: grafana/tempo:latest
+    depends_on:
+      - automq
+    command: "-target=all -config.file=/etc/tempo.yaml"
+    restart: always
+    volumes:
+      - ./volumes/tempo/tempo.yaml:/etc/tempo.yaml
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200" # tempo
+      # - "4317:4317" # Tempo OTLP GRPC
+      # - "4318:4318" # Tempo OTLP HTTP
+    environment:
+     - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+
+  vulture:
+    image: grafana/tempo-vulture:latest
+    restart: always
+    command:
+      [
+        "-prometheus-listen-address=:8080",
+        "-tempo-query-url=http://tempo:3200",
+        "-tempo-push-url=http://tempo:4317",
+      ]
+    depends_on:
+      - tempo
+
+  loki:
+    image: grafana/loki:latest
+    command: "-config.file=/etc/loki/config.yaml -target=all"
+    ports:
+      - 3101:3100
+      - 7946
+      - 9095
+    volumes:
+      - ./volumes/loki/config.yaml:/etc/loki/config.yaml
+    depends_on:
+      - rustfs
+    healthcheck:
+      test: [ "CMD", "/usr/bin/loki", "-health" ]
+      start_period: 30s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   prometheus:
     image: prom/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
+      - --web.enable-remote-write-receiver
+      - --enable-feature=exemplar-storage
+      - --enable-feature=native-histograms
     ports:
       - 9090:9090
     restart: unless-stopped
@@ -217,7 +272,8 @@ services:
     environment:
       DATABASE_URL: postgres://docker:example@db/docker
       SERVICE_TYPE: auth
-      RUST_LOG: debug
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4320
+      # RUST_LOG: debug
     deploy:
       mode: replicated
       replicas: 3
@@ -240,7 +296,8 @@ services:
     environment:
       DATABASE_URL: postgres://docker:example@db/docker
       AUTH_SERVICE: http://web-auth:3000
-      RUST_LOG: debug
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4320
+      # RUST_LOG: debug
     extra_hosts:
       - "host.docker.internal:host-gateway"
     models:
@@ -257,5 +314,6 @@ models:
 volumes:
   pgdata:
   prom_data:
+  tempo_data:
   grafana_data:
 

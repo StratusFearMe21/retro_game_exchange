@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use utoipa::ToSchema;
 
-use crate::htmx::HxQuery;
 use crate::{
     Placeholder,
     api::{
@@ -269,11 +268,10 @@ pub async fn get_offers(
 #[instrument(skip(conn))]
 pub async fn patch_offer(
     DatabaseConnection(mut conn, jar, user): DatabaseConnection,
-    HxQuery(search): HxQuery<OfferQuery>,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
     TypedHeader(hx_request): TypedHeader<HxRequest>,
-    JsonOrForm(game_offer): JsonOrForm<InsertableGameOffer>,
-) -> Result<HtmlOrJsonOnce<OfferTemplate>, error::Error> {
+    JsonOrForm(game_offer): JsonOrForm<ChangesetOffer>,
+) -> Result<HtmlOrJsonSimple<OfferTemplate>, error::Error> {
     if let Some(user) = user {
         let offer_up = game_offer.offer_up;
         let for_game = game_offer.for_game;
@@ -298,7 +296,7 @@ pub async fn patch_offer(
             .ok_or_eyre("Couldn't find that offer")
             .with_status_code(StatusCode::NOT_FOUND)?;
 
-        Ok(HtmlOrJsonOnce(
+        Ok(HtmlOrJsonSimple(
             accept,
             hx_request,
             OfferTemplate {

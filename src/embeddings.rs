@@ -1,4 +1,4 @@
-use std::{borrow::Cow, convert::Infallible, ops::Deref, sync::Arc};
+use std::{borrow::Cow, convert::Infallible, ops::Deref};
 
 use axum::extract::FromRequestParts;
 use base64::{Engine, alphabet::STANDARD, engine::GeneralPurposeConfig};
@@ -9,7 +9,7 @@ use nalgebra::{ArrayStorage, Const, Matrix, U1};
 use serde::{Deserialize, Deserializer, Serialize, de::Error};
 use tracing::instrument;
 
-use crate::{ApiState, api::games::InsertableGame};
+use crate::{ApiState, EmbeddingModelConfig, api::games::InsertableGame};
 
 const MODEL_DIMENSION: usize = 768;
 const STORAGE_DIMENSION: usize = 256;
@@ -116,8 +116,7 @@ impl EmbeddingData {
 #[derive(Clone, Debug)]
 pub struct EmbeddingRetreiver {
     pub reqwest_client: reqwest::Client,
-    pub embedding_model_url: Arc<str>,
-    pub embedding_model_model: Arc<str>,
+    pub embedding_model: EmbeddingModelConfig,
 }
 
 impl FromRequestParts<ApiState> for EmbeddingRetreiver {
@@ -129,8 +128,7 @@ impl FromRequestParts<ApiState> for EmbeddingRetreiver {
     ) -> Result<Self, Self::Rejection> {
         Ok(Self {
             reqwest_client: state.reqwest_client.clone(),
-            embedding_model_url: Arc::clone(&state.embedding_model_url),
-            embedding_model_model: Arc::clone(&state.embedding_model_model),
+            embedding_model: state.embedding_model.clone(),
         })
     }
 }
@@ -142,9 +140,9 @@ impl EmbeddingRetreiver {
             data: [embedding_data],
         } = self
             .reqwest_client
-            .post(format!("{}/embeddings", self.embedding_model_url))
+            .post(format!("{}/embeddings", self.embedding_model.url))
             .json(&EmbeddingInput {
-                model: Cow::Borrowed(self.embedding_model_model.deref()),
+                model: Cow::Borrowed(self.embedding_model.model.deref()),
                 input: Cow::Borrowed(input),
                 encoding_format: "base64",
             })
