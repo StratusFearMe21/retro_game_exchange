@@ -30,6 +30,8 @@ opentelemetry-semantic-conventions = { version = "0.31.0", features = ["semconv_
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
 pgvector = { version = "0.4.1", features = ["diesel"] }
 pin-project-lite = "0.2.16"
+postcard = { version = "1.1.3", features = ["use-std"] }
+rdkafka = { version = "0.39.0", features = ["cmake-build", "tracing"] }
 reqwest = { version = "0.13.1", default-features = false, features = ["json"] }
 sailfish = "0.10.1"
 serde = { version = "1.0.228", features = ["derive"] }

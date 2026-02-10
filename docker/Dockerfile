@@ -37,6 +37,9 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder-rs 
+RUN apt-get update; \
+  apt-get upgrade -y; \
+  apt-get install cmake -y
 COPY --from=planner /app/recipe.json recipe.json
 # Build dependencies - this is the caching Docker layer!
 RUN cargo chef cook --release --recipe-path recipe.json

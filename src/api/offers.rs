@@ -1,3 +1,6 @@
+use std::ops::Deref;
+use std::time::Duration;
+
 use axum::extract::Query;
 use axum_extra::TypedHeader;
 use color_eyre::eyre::{Context, OptionExt, eyre};
@@ -8,12 +11,18 @@ use diesel::{
 };
 use diesel_async::RunQueryDsl;
 use diesel_derive_enum::DbEnum;
+use opentelemetry::global;
+use rdkafka::message::OwnedHeaders;
+use rdkafka::producer::FutureRecord;
 use reqwest::StatusCode;
 use sailfish::{TemplateOnce, TemplateSimple};
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use utoipa::ToSchema;
 
+use crate::KafkaState;
+use crate::emails::Email;
+use crate::telemetry::KafkaOwnedHeaderCarrier;
 use crate::{
     Placeholder,
     api::{
@@ -215,7 +224,7 @@ pub async fn get_offers(
         // let offers = GameOffer::query()
         //     .load(&mut conn)
         //     .await
-        //     .wrap_err("Failed to insert game into database")
+        //     .wrap_err("Failed to insert offer into database")
         //     .with_status_code(StatusCode::UNPROCESSABLE_ENTITY)?;
 
         Ok(HtmlOrJsonOnce(
@@ -337,11 +346,6 @@ pub async fn patch_offer(
             )
         ),
     ),
-    params(
-        // ("q" = String, Path, description = "Search query for games"),
-        ("uid" = i64, Query, description = "The user ID who the offers returned will be made by"),
-        ("status" = String, Query, description = "The status of the offers to be returned")
-    ),
     security(
         ("basic_auth" = []),
         ("bearer_jwt" = []),
@@ -353,18 +357,44 @@ pub async fn offer_game(
     DatabaseConnection(mut conn, _, user): DatabaseConnection,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
     TypedHeader(hx_request): TypedHeader<HxRequest>,
-    JsonOrForm(game_offer): JsonOrForm<InsertableGameOffer>,
+    kafka_state: KafkaState,
+    JsonOrForm(mut game_offer): JsonOrForm<InsertableGameOffer>,
 ) -> Result<HtmlOrJsonSimple<OfferTemplate>, error::Error> {
     if let Some(user) = user {
         let offer_up = game_offer.offer_up;
         let for_game = game_offer.for_game;
+        game_offer.made_by = user.id;
 
         diesel::insert_into(offers::table)
             .values(game_offer)
             .execute(&mut conn)
             .await
-            .wrap_err("Failed to insert game into database")
+            .wrap_err("Failed to insert offer into database")
             .with_status_code(StatusCode::UNPROCESSABLE_ENTITY)?;
+
+        kafka_state
+            .producer
+            .send(
+                FutureRecord::<[u8], _>::to(kafka_state.email_topic.deref())
+                    .payload(
+                        &postcard::to_stdvec(&Email {
+                            to_id: user.id,
+                            email_string: String::from("Created an offer"),
+                        })
+                        .wrap_err("Failed to serialize email message")
+                        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?,
+                    )
+                    .headers(global::get_text_map_propagator(|propagator| {
+                        let mut headers = OwnedHeaders::new();
+                        propagator.inject(&mut KafkaOwnedHeaderCarrier::new(&mut headers));
+                        headers
+                    })),
+                Duration::from_secs(0),
+            )
+            .await
+            .map_err(|e| e.0)
+            .wrap_err("Failed to send email message to kafka")
+            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
         let offer = GameOffer::query()
             .filter(offers::offer_up.eq(offer_up))

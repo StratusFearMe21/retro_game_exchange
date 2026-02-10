@@ -1,18 +1,21 @@
-use std::fmt::{self, Display};
+use std::{
+    fmt::{self, Display},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use axum::http::HeaderMap;
 use diesel::connection::{Instrumentation, InstrumentationEvent};
 use opentelemetry::{
-    Context, KeyValue,
-    propagation::TextMapPropagator,
-    trace::{SpanContext, Status, TraceContextExt},
+    Context, KeyValue, global,
+    propagation::{Extractor, Injector},
+    trace::{Span, SpanBuilder, SpanContext, Status, TraceContextExt, Tracer},
 };
 use opentelemetry_otlp::{Compression, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::{
     Resource,
     logs::SdkLoggerProvider,
     propagation::TraceContextPropagator,
-    trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
+    trace::{RandomIdGenerator, Sampler, SdkTracer, SdkTracerProvider},
 };
 use opentelemetry_semantic_conventions::{
     SCHEMA_URL,
@@ -21,8 +24,11 @@ use opentelemetry_semantic_conventions::{
         SERVICE_VERSION,
     },
 };
+use rdkafka::{
+    Message,
+    message::{BorrowedHeaders, BorrowedMessage, Headers, OwnedHeaders},
+};
 use tower_http::trace::{DefaultMakeSpan, MakeSpan};
-use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::ServiceConfig;
@@ -37,7 +43,7 @@ impl<'a> HeaderMapCarrier<'a> {
     }
 }
 
-impl<'a> opentelemetry::propagation::Extractor for HeaderMapCarrier<'a> {
+impl<'a> Extractor for HeaderMapCarrier<'a> {
     fn get(&self, key: &str) -> Option<&str> {
         self.headers.get(key).and_then(|v| v.to_str().ok())
     }
@@ -62,6 +68,63 @@ impl<'a> opentelemetry::propagation::Extractor for HeaderMapCarrier<'a> {
     }
 }
 
+pub struct KafkaOwnedHeaderCarrier<'a> {
+    headers: &'a mut OwnedHeaders,
+}
+
+impl<'a> KafkaOwnedHeaderCarrier<'a> {
+    pub fn new(headers: &'a mut OwnedHeaders) -> Self {
+        Self { headers }
+    }
+}
+
+impl<'a> Injector for KafkaOwnedHeaderCarrier<'a> {
+    fn set(&mut self, key: &str, value: String) {
+        let headers = std::mem::replace(self.headers, OwnedHeaders::new_with_capacity(0));
+        *self.headers = headers.insert(rdkafka::message::Header {
+            key,
+            value: Some(&value),
+        });
+    }
+}
+
+pub struct KafkaBorrowedHeaderCarrier<'a> {
+    headers: &'a BorrowedHeaders,
+}
+
+impl<'a> KafkaBorrowedHeaderCarrier<'a> {
+    pub fn new(headers: &'a BorrowedHeaders) -> Self {
+        Self { headers }
+    }
+
+    fn get(&self, key: &str) -> impl Iterator<Item = &str> {
+        self.headers
+            .iter()
+            .filter(move |h| h.key == key)
+            .filter_map(|h| h.value.and_then(|v| std::str::from_utf8(v).ok()))
+    }
+}
+
+impl<'a> Extractor for KafkaBorrowedHeaderCarrier<'a> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.get(key).next()
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.headers.iter().map(|h| h.key).collect()
+    }
+
+    fn get_all(&self, key: &str) -> Option<Vec<&str>> {
+        let values = self.get(key).collect::<Vec<_>>();
+
+        if values.is_empty() {
+            None
+        } else {
+            Some(values)
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct TelemetryMakeSpan(pub DefaultMakeSpan);
 
@@ -69,9 +132,9 @@ impl<B> MakeSpan<B> for TelemetryMakeSpan {
     fn make_span(&mut self, request: &axum::http::Request<B>) -> tracing::Span {
         let span = self.0.make_span(request);
         if request.uri().path() != "/health" {
-            let propogator = TraceContextPropagator::new();
-
-            let parent_context = propogator.extract(&HeaderMapCarrier::new(request.headers()));
+            let parent_context = global::get_text_map_propagator(|propagator| {
+                propagator.extract(&HeaderMapCarrier::new(request.headers()))
+            });
             span.set_parent(parent_context).unwrap();
         } else {
             span.set_parent(Context::map_current(|cx| {
@@ -121,7 +184,7 @@ impl<Q: Display> Display for DbQuerySanitizer<Q> {
 }
 
 #[derive(Default)]
-pub struct DieselInstrumentation(Option<Span>);
+pub struct DieselInstrumentation(Option<tracing::Span>);
 
 impl Instrumentation for DieselInstrumentation {
     fn on_connection_event(&mut self, event: diesel::connection::InstrumentationEvent<'_>) {
@@ -146,6 +209,39 @@ impl Instrumentation for DieselInstrumentation {
     }
 }
 
+pub fn span_from_kafka_msg(tracer: &SdkTracer, msg: &BorrowedMessage<'_>) -> tracing::Span {
+    let time = SystemTime::now();
+
+    let span_builder = SpanBuilder {
+        name: std::borrow::Cow::Borrowed("kafka-message-in-queue"),
+        start_time: msg
+            .timestamp()
+            .to_millis()
+            .map(|ts| UNIX_EPOCH + Duration::from_millis(ts as _)),
+        ..Default::default()
+    };
+
+    let mut kafka_msg_span = if let Some(headers) = msg.headers() {
+        let parent_context = global::get_text_map_propagator(|propagator| {
+            propagator.extract(&KafkaBorrowedHeaderCarrier::new(headers))
+        });
+
+        tracer.build_with_context(span_builder, &parent_context)
+    } else {
+        tracer.build(span_builder)
+    };
+
+    kafka_msg_span.end_with_timestamp(time);
+
+    let span = tracing::info_span!("kafka-message");
+    span.set_parent(opentelemetry::Context::map_current(|cx| {
+        cx.with_remote_span_context(kafka_msg_span.span_context().clone())
+    }))
+    .unwrap();
+
+    span
+}
+
 // Create a Resource that captures information about the entity for which telemetry is recorded.
 fn resource(service: &ServiceConfig) -> Resource {
     Resource::builder()
@@ -163,6 +259,35 @@ fn resource(service: &ServiceConfig) -> Resource {
         .build()
 }
 
+fn kafka_resource() -> Resource {
+    Resource::builder().with_service_name("kafka").build()
+}
+
+pub fn init_kafka_tracing_provider(service: &ServiceConfig) -> SdkTracerProvider {
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_compression(Compression::Gzip);
+
+    let exporter = if let Some(endpoint) = service.kafka_otlp_endpoint.as_ref() {
+        exporter.with_endpoint(endpoint).build().unwrap()
+    } else {
+        exporter.build().unwrap()
+    };
+
+    // global::set_text_map_propagator(TraceContextPropagator::new());
+
+    SdkTracerProvider::builder()
+        // Customize sampling strategy
+        .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
+            1.0,
+        ))))
+        // If export trace to AWS X-Ray, you can use XrayIdGenerator
+        .with_id_generator(RandomIdGenerator::default())
+        .with_resource(kafka_resource())
+        .with_batch_exporter(exporter)
+        .build()
+}
+
 pub fn init_tracing_provider(service: &ServiceConfig) -> SdkTracerProvider {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
@@ -173,6 +298,8 @@ pub fn init_tracing_provider(service: &ServiceConfig) -> SdkTracerProvider {
     } else {
         exporter.build().unwrap()
     };
+
+    global::set_text_map_propagator(TraceContextPropagator::new());
 
     SdkTracerProvider::builder()
         // Customize sampling strategy

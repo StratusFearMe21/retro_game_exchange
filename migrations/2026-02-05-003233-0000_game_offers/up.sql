@@ -4,13 +4,14 @@ CREATE TABLE offers(
     offer_up INTEGER NOT NULL,
     for_game INTEGER NOT NULL,
     made_by INTEGER NOT NULL,
-    offer_status offer_status NOT NULL,
+    offer_status offer_status NOT NULL DEFAULT 'up',
     PRIMARY KEY(offer_up, for_game),
     FOREIGN KEY (offer_up) REFERENCES games(id),
     FOREIGN KEY (for_game) REFERENCES games(id),
     FOREIGN KEY (made_by) REFERENCES users(id)
 );
 
+ALTER TABLE offers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE offers FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users can view offers"
@@ -22,7 +23,9 @@ ON offers FOR INSERT
 WITH CHECK ( (SELECT current_setting('app.current_user_id', true)::integer) = made_by);
 
 CREATE POLICY "Users can offer only their own games"
-ON offers FOR INSERT
+ON offers
+AS RESTRICTIVE
+FOR INSERT
 WITH CHECK ( EXISTS (SELECT 1 FROM games WHERE owned_by = made_by AND id = offer_up) );
 
 CREATE POLICY "Users can update their own offers."
@@ -31,7 +34,9 @@ USING ( (SELECT current_setting('app.current_user_id', true)::integer) = made_by
 WITH CHECK ( (SELECT current_setting('app.current_user_id', true)::integer) = made_by);
 
 CREATE POLICY "Users offers cannot be updated to be somebody else's game."
-ON offers FOR UPDATE
+ON offers
+AS RESTRICTIVE
+FOR UPDATE
 WITH CHECK ( EXISTS (SELECT 1 FROM games WHERE owned_by = made_by AND id = offer_up) );
 
 CREATE POLICY "Users can delete their offers."

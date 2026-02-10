@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
-    fmt::Display,
+    convert::Infallible,
+    fmt::{Debug, Display},
     net::{Ipv6Addr, SocketAddr, SocketAddrV6, ToSocketAddrs},
     ops::Deref,
     sync::Arc,
@@ -11,6 +12,7 @@ use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
 use axum::{
     Json,
     body::Bytes,
+    extract::FromRequestParts,
     http::{
         HeaderValue, Response, StatusCode, Uri,
         header::{ACCEPT_ENCODING, Entry, LOCATION, VARY},
@@ -29,7 +31,10 @@ use diesel_async::{
     pooled_connection::{AsyncDieselConnectionManager, ManagerConfig, bb8},
 };
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
-use futures_util::FutureExt;
+use futures_util::{
+    FutureExt, StreamExt,
+    future::{self, Either},
+};
 use jsonwebtoken::{
     DecodingKey, EncodingKey,
     jwk::{Jwk, JwkSet},
@@ -37,6 +42,11 @@ use jsonwebtoken::{
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use pin_project_lite::pin_project;
+use rdkafka::{
+    ClientConfig,
+    consumer::{Consumer, StreamConsumer},
+    producer::FutureProducer,
+};
 use serde::Deserialize;
 use telemetry::init_tracing_provider;
 use tokio::{net::TcpListener, signal};
@@ -48,7 +58,7 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
     trace::{DefaultMakeSpan, TraceLayer},
 };
-use tracing::Level;
+use tracing::{Instrument, Level};
 use tracing_error::ErrorLayer;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -64,6 +74,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
 mod api;
 mod cli_level_filter;
+mod emails;
 mod error;
 mod html_or_json;
 mod htmx;
@@ -173,7 +184,10 @@ use crate::{
     api::auth::{JWT_HEADER, pool::Pool},
     embeddings::EmbeddingRetreiver,
     htmx::{HxLocation, HxRequest},
-    telemetry::{DieselInstrumentation, TelemetryMakeSpan, init_logging_provider},
+    telemetry::{
+        DieselInstrumentation, TelemetryMakeSpan, init_kafka_tracing_provider,
+        init_logging_provider,
+    },
 };
 
 pub trait Placeholder {
@@ -189,6 +203,7 @@ const fn default_listen_addr() -> SocketAddr {
 #[serde(rename_all = "lowercase")]
 enum ServiceType {
     Auth,
+    Email,
     #[default]
     Main,
 }
@@ -197,6 +212,7 @@ impl Display for ServiceType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
             Self::Auth => write!(f, "auth-api"),
+            Self::Email => write!(f, "email-api"),
             Self::Main => write!(f, "main-api"),
         }
     }
@@ -212,7 +228,7 @@ pub struct EmbeddingModelConfig {
     model: Arc<str>,
 }
 
-#[derive(Clone, Debug, Parser, Deserialize, Default)]
+#[derive(Debug, Parser, Deserialize, Default)]
 pub struct ServiceConfig {
     #[clap(short, long, value_enum, env = "SERVICE_TYPE")]
     #[serde(default, rename = "type")]
@@ -226,6 +242,19 @@ pub struct ServiceConfig {
     #[clap(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
     #[serde(default)]
     otlp_endpoint: Option<String>,
+    #[clap(long, env = "KAFKA_OTLP_ENDPOINT")]
+    #[serde(default)]
+    kafka_otlp_endpoint: Option<String>,
+}
+
+#[derive(Debug, Parser, Deserialize, Default)]
+struct KafkaConfig {
+    #[clap(long, env = "KAFKA_BROKERS")]
+    #[serde(default)]
+    brokers: String,
+    #[clap(long, env = "KAFKA_EMAIL_TOPIC")]
+    #[serde(default)]
+    email_topic: Arc<str>,
 }
 
 #[derive(Parser, Deserialize)]
@@ -244,6 +273,9 @@ struct Cli {
     #[clap(flatten)]
     #[serde(default)]
     embedding_model: EmbeddingModelConfig,
+    #[clap(flatten)]
+    #[serde(default)]
+    kafka: KafkaConfig,
     #[clap(long)]
     #[serde(skip)]
     reembed: bool,
@@ -261,7 +293,22 @@ impl Default for Cli {
             embedding_model: EmbeddingModelConfig::default(),
             reembed: false,
             service: ServiceConfig::default(),
+            kafka: KafkaConfig::default(),
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct KafkaState {
+    pub email_topic: Arc<str>,
+    pub producer: FutureProducer,
+}
+
+impl Debug for KafkaState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KafkaState")
+            .field("email_topic", &self.email_topic)
+            .finish_non_exhaustive()
     }
 }
 
@@ -272,6 +319,18 @@ pub struct ApiState {
     pub reqwest_client: reqwest::Client,
     pub encoding_key: Option<EncodingKey>,
     pub decoding_keys: Arc<HashMap<String, DecodingKey>>,
+    pub kafka_state: KafkaState,
+}
+
+impl FromRequestParts<ApiState> for KafkaState {
+    type Rejection = Infallible;
+
+    async fn from_request_parts(
+        _parts: &mut axum::http::request::Parts,
+        state: &ApiState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(state.kafka_state.clone())
+    }
 }
 
 #[tokio::main]
@@ -302,8 +361,10 @@ async fn main() -> eyre::Result<()> {
     config.update_from(std::env::args_os());
 
     let tracer_provider = init_tracing_provider(&config.service);
+    let kafka_tracer_provider = init_kafka_tracing_provider(&config.service);
     let logger_provider = init_logging_provider(&config.service);
     let tracer = tracer_provider.tracer("tracing-retro-game-exchange");
+    let kafka_tracer = kafka_tracer_provider.tracer("kafka");
 
     tracing_subscriber::registry()
         .with(ErrorLayer::default())
@@ -347,6 +408,17 @@ async fn main() -> eyre::Result<()> {
     // SAFETY: Box<dyn Error + Send + Sync> is not also 'static,
     // so must use unwrap
     harness.run_pending_migrations(MIGRATIONS).unwrap();
+
+    let mut kafka_config = ClientConfig::new();
+
+    if config.kafka.brokers.is_empty() {
+        bail!("kafka_brokers is not set");
+    }
+
+    kafka_config
+        .set("client.id", &config.service.id)
+        .set("group.id", config.service.service_type.to_string())
+        .set("bootstrap.servers", &config.kafka.brokers);
 
     if config.reembed {
         embeddings::reembed(
@@ -393,7 +465,7 @@ async fn main() -> eyre::Result<()> {
 
             (Some(encoding_key), jwk_set)
         }
-        ServiceType::Main => {
+        ServiceType::Main | ServiceType::Email => {
             let jwks_url = reqwest::Url::parse(&format!(
                 "{}/.well-known/jwks.json",
                 config.service.auth_service
@@ -450,129 +522,176 @@ async fn main() -> eyre::Result<()> {
             .collect::<HashMap<_, _>>(),
     );
 
-    let router = OpenApiRouter::new().routes(routes!(api::health));
+    let shutdown_signal = shutdown_signal();
 
-    let (main_router, main_api) = router
-        .clone()
-        .routes(routes!(api::games::get_all_games, api::games::add_game))
-        .routes(routes!(
-            api::games::get_game,
-            api::games::update_game,
-            api::games::patch_game,
-            api::games::delete_game
-        ))
-        .routes(routes!(api::users::get_user))
-        .routes(routes!(
-            api::offers::get_offers,
-            api::offers::offer_game,
-            api::offers::patch_offer
-        ))
-        .split_for_parts();
+    match config.service.service_type {
+        ServiceType::Email => {
+            let consumer: StreamConsumer = kafka_config
+                .create()
+                .wrap_err("Failed to create email consumer")?;
 
-    let (auth_router, auth_api) = router
-        .routes(routes!(api::auth::signup))
-        .routes(routes!(api::auth::logout))
-        .routes(routes!(
-            api::auth::login,
-            api::auth::edit_login,
-            api::auth::delete_login
-        ))
-        .split_for_parts();
+            consumer
+                .subscribe(&[&config.kafka.email_topic])
+                .wrap_err("Failed to subscribe to email topic")?;
 
-    let (router, mut api) = match config.service.service_type {
-        ServiceType::Main => (main_router, main_api.merge_from(auth_api)),
-        ServiceType::Auth => (auth_router, auth_api.merge_from(main_api)),
-    };
+            tokio::pin!(shutdown_signal);
 
-    api.info = Info::builder()
-        .title(env!("CARGO_PKG_NAME"))
-        .description(option_env!("CARGO_PKG_DESCRIPTION"))
-        .version(env!("CARGO_PKG_VERSION"))
-        .license(
-            option_env!("CARGO_PKG_LICENSE")
-                .map(|license| License::builder().identifier(Some(license)).build()),
-        )
-        .contact(None)
-        .build();
-    api.components.as_mut().map(|components| {
-        components.security_schemes.insert(
-            "cookie_jwt".to_owned(),
-            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("sessionid.0"))),
-        );
-        components.security_schemes.insert(
-            "bearer_jwt".to_owned(),
-            SecurityScheme::Http(
-                Http::builder()
-                    .scheme(HttpAuthScheme::Bearer)
-                    .bearer_format("JWT")
-                    .build(),
-            ),
-        );
-        components.security_schemes.insert(
-            "basic_auth".to_owned(),
-            SecurityScheme::Http(
-                Http::builder()
-                    .scheme(HttpAuthScheme::Basic)
-                    // .bearer_format("JWT")
-                    .build(),
-            ),
-        );
-    });
-    let app =
-        router
-            .route(
-                "/.well-known/jwks.json",
-                get(move || async move { Json(jwk_set) }),
-            )
-            .merge(SwaggerUi::new("/swagger").url("/api/openapi.json", api))
-            .fallback_service(
-                ServiceBuilder::new()
-                    .layer(HxRequestLayer)
-                    .layer(SetResponseHeaderLayer::appending(
-                        VARY,
-                        HeaderValue::from(ACCEPT_ENCODING),
-                    ))
-                    .service(
-                        ServeDir::new("frontend/dist")
-                            .precompressed_gzip()
-                            .precompressed_br(),
+            let mut consumer_stream = consumer.stream();
+
+            while let Either::Left((Some(msg), _)) =
+                future::select(consumer_stream.next(), &mut shutdown_signal).await
+            {
+                let msg = msg.wrap_err("Failed to receive email message from kafka")?;
+                let span = telemetry::span_from_kafka_msg(&kafka_tracer, &msg);
+
+                tokio::spawn(
+                    emails::process_message(msg.detach())
+                        .map(move |result| {
+                            if let Err(e) = result {
+                                tracing::error!("{}", e);
+                            }
+                        })
+                        .instrument(span),
+                );
+            }
+        }
+        ServiceType::Auth | ServiceType::Main => {
+            let router = OpenApiRouter::new().routes(routes!(api::health));
+
+            let (main_router, main_api) = router
+                .clone()
+                .routes(routes!(api::games::get_all_games, api::games::add_game))
+                .routes(routes!(
+                    api::games::get_game,
+                    api::games::update_game,
+                    api::games::patch_game,
+                    api::games::delete_game
+                ))
+                .routes(routes!(api::users::get_user))
+                .routes(routes!(
+                    api::offers::get_offers,
+                    api::offers::offer_game,
+                    api::offers::patch_offer
+                ))
+                .split_for_parts();
+
+            let (auth_router, auth_api) = router
+                .routes(routes!(api::auth::signup))
+                .routes(routes!(api::auth::logout))
+                .routes(routes!(
+                    api::auth::login,
+                    api::auth::edit_login,
+                    api::auth::delete_login
+                ))
+                .split_for_parts();
+
+            let (router, mut api) = match config.service.service_type {
+                ServiceType::Main | ServiceType::Email => {
+                    (main_router, main_api.merge_from(auth_api))
+                }
+                ServiceType::Auth => (auth_router, auth_api.merge_from(main_api)),
+            };
+
+            api.info = Info::builder()
+                .title(env!("CARGO_PKG_NAME"))
+                .description(option_env!("CARGO_PKG_DESCRIPTION"))
+                .version(env!("CARGO_PKG_VERSION"))
+                .license(
+                    option_env!("CARGO_PKG_LICENSE")
+                        .map(|license| License::builder().identifier(Some(license)).build()),
+                )
+                .contact(None)
+                .build();
+            api.components.as_mut().map(|components| {
+                components.security_schemes.insert(
+                    "cookie_jwt".to_owned(),
+                    SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("sessionid.0"))),
+                );
+                components.security_schemes.insert(
+                    "bearer_jwt".to_owned(),
+                    SecurityScheme::Http(
+                        Http::builder()
+                            .scheme(HttpAuthScheme::Bearer)
+                            .bearer_format("JWT")
+                            .build(),
                     ),
-            )
-            .layer(
-                ServiceBuilder::new()
-                    .layer(CatchPanicLayer::custom(error::PanicHandler))
-                    .layer(RedirectIfUnauthorizedLayer::to(
-                        "/login.html",
-                        [
-                            api::auth::__path_login::path(),
-                            api::auth::__path_signup::path(),
-                        ],
-                    ))
-                    .layer(CompressionLayer::new().br(true).gzip(true))
-                    .layer(TraceLayer::new_for_http().make_span_with(TelemetryMakeSpan(
-                        DefaultMakeSpan::new().level(Level::INFO),
-                    ))),
-            )
-            .with_state(ApiState {
-                pool: Pool::new(pool),
-                embedding_model: config.embedding_model.clone(),
-                reqwest_client,
-                encoding_key,
-                decoding_keys,
+                );
+                components.security_schemes.insert(
+                    "basic_auth".to_owned(),
+                    SecurityScheme::Http(
+                        Http::builder()
+                            .scheme(HttpAuthScheme::Basic)
+                            // .bearer_format("JWT")
+                            .build(),
+                    ),
+                );
             });
+            let app = router
+                .route(
+                    "/.well-known/jwks.json",
+                    get(move || async move { Json(jwk_set) }),
+                )
+                .merge(SwaggerUi::new("/swagger").url("/api/openapi.json", api))
+                .fallback_service(
+                    ServiceBuilder::new()
+                        .layer(HxRequestLayer)
+                        .layer(SetResponseHeaderLayer::appending(
+                            VARY,
+                            HeaderValue::from(ACCEPT_ENCODING),
+                        ))
+                        .service(
+                            ServeDir::new("frontend/dist")
+                                .precompressed_gzip()
+                                .precompressed_br(),
+                        ),
+                )
+                .layer(
+                    ServiceBuilder::new()
+                        .layer(CatchPanicLayer::custom(error::PanicHandler))
+                        .layer(RedirectIfUnauthorizedLayer::to(
+                            "/login.html",
+                            [
+                                api::auth::__path_login::path(),
+                                api::auth::__path_signup::path(),
+                            ],
+                        ))
+                        .layer(CompressionLayer::new().br(true).gzip(true))
+                        .layer(TraceLayer::new_for_http().make_span_with(TelemetryMakeSpan(
+                            DefaultMakeSpan::new().level(Level::INFO),
+                        ))),
+                )
+                .with_state(ApiState {
+                    pool: Pool::new(pool),
+                    embedding_model: config.embedding_model.clone(),
+                    reqwest_client,
+                    encoding_key,
+                    decoding_keys,
+                    kafka_state: KafkaState {
+                        email_topic: Arc::clone(&config.kafka.email_topic),
+                        producer: kafka_config
+                            .create()
+                            .wrap_err("Failed to create Kafka producer")?,
+                    },
+                });
 
-    let listener = TcpListener::bind(config.addr)
-        .await
-        .wrap_err_with(|| format!("Failed to open listener on {}", config.addr))?;
-    tracing::info!("Listening on {}", config.addr);
-    axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .wrap_err("Failed to serve make service")?;
+            let listener = TcpListener::bind(config.addr)
+                .await
+                .wrap_err_with(|| format!("Failed to open listener on {}", config.addr))?;
+            tracing::info!("Listening on {}", config.addr);
+
+            axum::serve(listener, app.into_make_service())
+                .with_graceful_shutdown(shutdown_signal)
+                .await
+                .wrap_err("Failed to serve make service")?;
+        }
+    }
 
     tracer_provider
         .shutdown()
         .wrap_err("Failed to shut down tracing service")?;
+    kafka_tracer_provider
+        .shutdown()
+        .wrap_err("Failed to shut down kafka tracing service")?;
     logger_provider
         .shutdown()
         .wrap_err("Failed to shut down logging service")
