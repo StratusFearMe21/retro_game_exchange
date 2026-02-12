@@ -125,15 +125,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arc-swap"
-version = "1.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ded5f9a03ac8f24d1b8a25101ee812cd32cdc8c50a4c50237de2c4915850e73"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "async-compression"
 version = "0.4.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2843,7 +2834,6 @@ dependencies = [
 name = "retro-game-exchange"
 version = "0.1.0"
 dependencies = [
- "arc-swap",
  "aws-lc-rs",
  "axum",
  "axum-extra",
