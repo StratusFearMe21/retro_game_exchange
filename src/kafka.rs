@@ -233,34 +233,18 @@ pub async fn run(
 
     let shutdown_signal = shutdown_signal.with_cancellation_token(&main_canceller);
     tokio::pin!(shutdown_signal);
-    tasks.spawn({
-        let main_consumer_poller_token = CancellationToken::new();
-        cancellations
-            .lock()
-            .expect("Mutex poisoned")
-            .insert((String::new(), 0), main_consumer_poller_token.clone());
-        let consumer = Arc::clone(&consumer);
 
-        async move {
-            let mut consumer_stream = consumer.stream();
-
-            loop {
-                match consumer_stream
-                    .next()
-                    .with_cancellation_token(&main_consumer_poller_token)
-                    .await
-                {
-                    Some(_) => {
-                        tracing::warn!("Main consumer should not be receiving messages");
-                    }
-                    None => break,
-                }
-            }
-        }
-    });
+    let consumer = Arc::clone(&consumer);
+    let mut consumer_stream = consumer.stream();
 
     loop {
         tokio::select! {
+            // We always want to receive new tasks and
+            // call `split_partition_queue` on them
+            // *before* we poll the main consumer.
+            // Otherwise the main consumer will intercept
+            // messages meant for our tasks.
+            biased;
             Some(assignments) = rx.recv() => {
                  for (topic, partition) in assignments {
                     let mut map = cancellations.lock().expect("Mutex poisoned");
@@ -337,6 +321,9 @@ pub async fn run(
                     );
                 }
             }
+            _ = consumer_stream.next() => {
+                tracing::warn!("Main consumer should not be receiving messages");
+            }
             _ = &mut shutdown_signal => {
                 let map = cancellations.lock().expect("Mutex poisoned");
                 for token in map.values() {
@@ -354,7 +341,8 @@ pub async fn run(
 
 pin_project! {
     struct RateLimitedConsumer<'a> {
-        consumer: Option<MessageStream<'a, DefaultConsumerContext>>,
+        #[pin]
+        consumer: MessageStream<'a, DefaultConsumerContext>,
         #[pin]
         sleep: Sleep,
         retry_mins: u64
@@ -363,7 +351,7 @@ pin_project! {
 
 impl<'a> RateLimitedConsumer<'a> {
     fn new(
-        consumer: Option<MessageStream<'a, DefaultConsumerContext>>,
+        consumer: MessageStream<'a, DefaultConsumerContext>,
         sleep: Sleep,
         retry_mins: u64,
     ) -> Self {
@@ -385,15 +373,11 @@ impl<'a> Stream for RateLimitedConsumer<'a> {
         let mut this = self.project();
 
         ready!(this.sleep.as_mut().poll(cx));
-        if let Some(consumer) = this.consumer {
-            let next = ready!(consumer.poll_next_unpin(cx));
-            this.sleep
-                .as_mut()
-                .reset(Instant::now() + Duration::from_mins(*this.retry_mins));
-            Poll::Ready(next)
-        } else {
-            Poll::Pending
-        }
+        let next = ready!(this.consumer.poll_next(cx));
+        this.sleep
+            .as_mut()
+            .reset(Instant::now() + Duration::from_mins(*this.retry_mins));
+        Poll::Ready(next)
     }
 }
 
@@ -471,28 +455,20 @@ pub async fn retrier(
         consumer
             .subscribe(&topics)
             .wrap_err("Failed to subscribe to topic")?;
-
-        // let mut topic_partitions_to_assign = TopicPartitionList::new();
-
-        // for topic in topics {
-        //     topic_partitions_to_assign.add_partition(topic, 0);
-        // }
-
-        // consumer
-        //     .assign(&topic_partitions_to_assign)
-        //     .wrap_err("Failed to assign retry partitions to consumer")?;
     }
 
     let consumer_partition_queues = retry_wait_mins
         .iter()
         .enumerate()
         .map(|(retry, _)| {
-            consumer.split_partition_queue(&format!("{}-retry-{}", topic, retry + 1), 0)
+            consumer
+                .split_partition_queue(&format!("{}-retry-{}", topic, retry + 1), 0)
+                .expect("Failed to split partition queue")
         })
         .collect::<Vec<_>>();
 
     let mut consumers = vec![RateLimitedConsumer::new(
-        Some(consumer.stream()),
+        consumer.stream(),
         tokio::time::sleep(Duration::from_secs(0)),
         0,
     )];
@@ -503,7 +479,7 @@ pub async fn retrier(
             .zip(consumer_partition_queues.iter())
             .map(|(mins, queue)| {
                 RateLimitedConsumer::new(
-                    queue.as_ref().map(|q| q.stream()),
+                    queue.stream(),
                     tokio::time::sleep(Duration::from_mins(*mins)),
                     *mins,
                 )
