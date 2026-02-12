@@ -9,11 +9,15 @@ use std::{
 };
 
 use color_eyre::eyre::{self, Context, OptionExt, eyre};
-use futures_util::{FutureExt, Stream, StreamExt, future::CatchUnwind, ready};
+use futures_util::{
+    FutureExt, Stream, StreamExt,
+    future::{self, CatchUnwind, Either},
+    ready,
+};
 use opentelemetry_sdk::trace::SdkTracer;
 use pin_project_lite::pin_project;
 use rdkafka::{
-    ClientConfig, ClientContext, Message, TopicPartitionList,
+    ClientConfig, ClientContext, Message,
     consumer::{
         BaseConsumer, Consumer, ConsumerContext, DefaultConsumerContext, MessageStream, Rebalance,
         StreamConsumer,
@@ -106,6 +110,7 @@ impl<T, F: Future<Output = Result<T, JobError>>> SafeFutureRunner<F> {
 
 async fn handle_failure<'a>(
     max_failures: usize,
+    topic: &str,
     producer: &FutureProducer,
     msg: &BorrowedMessage<'a>,
     service_type: ServiceType,
@@ -132,11 +137,11 @@ async fn handle_failure<'a>(
 
     let topic = match error.status {
         JobErrorStatus::Retryable if max_failures >= retry_record.errors.len() => {
-            format!("{}-retry-{}", msg.topic(), retry_record.errors.len())
+            format!("{}-retry-{}", topic, retry_record.errors.len())
         }
         _ => {
             tracing::error!("Message made it to the DLQ");
-            format!("{}-dlq", msg.topic())
+            format!("{}-dlq", topic)
         }
     };
 
@@ -228,6 +233,31 @@ pub async fn run(
 
     let shutdown_signal = shutdown_signal.with_cancellation_token(&main_canceller);
     tokio::pin!(shutdown_signal);
+    tasks.spawn({
+        let main_consumer_poller_token = CancellationToken::new();
+        cancellations
+            .lock()
+            .expect("Mutex poisoned")
+            .insert((String::new(), 0), main_consumer_poller_token.clone());
+        let consumer = Arc::clone(&consumer);
+
+        async move {
+            let mut consumer_stream = consumer.stream();
+
+            loop {
+                match consumer_stream
+                    .next()
+                    .with_cancellation_token(&main_consumer_poller_token)
+                    .await
+                {
+                    Some(_) => {
+                        tracing::warn!("Main consumer should not be receiving messages");
+                    }
+                    None => break,
+                }
+            }
+        }
+    });
 
     loop {
         tokio::select! {
@@ -249,7 +279,7 @@ pub async fn run(
                         })?;
 
                     let token = CancellationToken::new();
-                    map.insert((topic, partition), token.clone());
+                    map.insert((topic.clone(), partition), token.clone());
 
                     let tracer = kafka_tracer.clone();
                     let producer = producer.clone();
@@ -271,27 +301,24 @@ pub async fn run(
                                 .with_cancellation_token(&token)
                                 .await;
 
-                                match result {
-                                    Some(Err(e)) => {
-                                        handle_failure(
-                                            // Only matters for retry service
-                                            usize::MAX,
-                                            &producer,
-                                            &msg,
-                                            service_type,
-                                            None,
-                                            e,
-                                        )
-                                        .await?;
-                                    }
-                                    Some(Ok(_)) => {
-                                        if !token.is_cancelled() {
-                                            consumer
-                                                .store_offset_from_message(&msg)
-                                                .wrap_err("Failed to commit message to stream")?;
-                                        }
-                                    }
-                                    None => {}
+                                if let Some(Err(e)) = result {
+                                    handle_failure(
+                                        // Only matters for retry service
+                                        usize::MAX,
+                                        &topic,
+                                        &producer,
+                                        &msg,
+                                        service_type,
+                                        None,
+                                        e,
+                                    )
+                                    .await?;
+                                }
+
+                                if !token.is_cancelled() {
+                                    consumer
+                                        .store_offset_from_message(&msg)
+                                        .wrap_err("Failed to commit message to stream")?;
                                 }
                             }
 
@@ -443,17 +470,17 @@ pub async fn retrier(
 
         consumer
             .subscribe(&topics)
-            .wrap_err("Failed to subscribe to  topic")?;
+            .wrap_err("Failed to subscribe to topic")?;
 
-        let mut topic_partitions_to_assign = TopicPartitionList::new();
+        // let mut topic_partitions_to_assign = TopicPartitionList::new();
 
-        for topic in topics {
-            topic_partitions_to_assign.add_partition(topic, 0);
-        }
+        // for topic in topics {
+        //     topic_partitions_to_assign.add_partition(topic, 0);
+        // }
 
-        consumer
-            .assign(&topic_partitions_to_assign)
-            .wrap_err("Failed to assign retry partitions to consumer")?;
+        // consumer
+        //     .assign(&topic_partitions_to_assign)
+        //     .wrap_err("Failed to assign retry partitions to consumer")?;
     }
 
     let consumer_partition_queues = retry_wait_mins
@@ -487,40 +514,47 @@ pub async fn retrier(
 
     tokio::pin!(shutdown_signal);
 
-    while let Some(msg) = consumers.next().await {
+    while let Either::Right((Some(msg), _)) =
+        future::select(&mut shutdown_signal, consumers.next()).await
+    {
         let msg = msg.wrap_err("Failed to receive message from kafka")?;
-        let span = telemetry::span_from_kafka_msg(&kafka_tracer, &msg);
 
-        let retry_record = match SafeFutureRunner::new(
-            decode_retry_record(msg.payload()).instrument(span.clone()),
-        )
-        .await
-        {
-            Ok(record) => record,
-            Err(e) => {
-                handle_failure(
-                    retry_wait_mins.len(),
-                    &producer,
-                    &msg,
-                    service_type,
-                    None,
-                    e,
-                )
-                .await?;
-                continue;
+        'job_process: {
+            let span = telemetry::span_from_kafka_msg(&kafka_tracer, &msg);
+
+            let retry_record = match SafeFutureRunner::new(
+                decode_retry_record(msg.payload()).instrument(span.clone()),
+            )
+            .await
+            {
+                Ok(record) => record,
+                Err(e) => {
+                    handle_failure(
+                        retry_wait_mins.len(),
+                        topic,
+                        &producer,
+                        &msg,
+                        service_type,
+                        None,
+                        e,
+                    )
+                    .await?;
+                    break 'job_process;
+                }
+            };
+
+            if retry_record.retry_service != service_type {
+                break 'job_process;
             }
-        };
 
-        if retry_record.retry_service != service_type {
-            continue;
-        }
+            let payload_ref = retry_record.record.as_ref().map(|p| p.as_ref());
 
-        let payload_ref = retry_record.record.as_ref().map(|p| p.as_ref());
-
-        match SafeFutureRunner::new(emails::process_message(payload_ref).instrument(span)).await {
-            Err(e) => {
+            if let Err(e) =
+                SafeFutureRunner::new(emails::process_message(payload_ref).instrument(span)).await
+            {
                 handle_failure(
                     retry_wait_mins.len(),
+                    topic,
                     &producer,
                     &msg,
                     service_type,
@@ -529,12 +563,11 @@ pub async fn retrier(
                 )
                 .await?;
             }
-            Ok(_) => {
-                consumer
-                    .store_offset_from_message(&msg)
-                    .wrap_err("Failed to commit message to stream")?;
-            }
         }
+
+        consumer
+            .store_offset_from_message(&msg)
+            .wrap_err("Failed to commit message to stream")?;
     }
 
     Ok(())

@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use color_eyre::eyre::{Context, OptionExt, eyre};
+use color_eyre::eyre::{Context, OptionExt};
 use serde::{Deserialize, Serialize};
 
 use crate::kafka::{JobError, JobErrorStatus, WithErrorStatus};
@@ -22,7 +22,7 @@ pub async fn process_message(message: Option<&[u8]>) -> Result<(), JobError> {
 
     tracing::info!(?email, "Sending email");
 
-    // Ok(())
+    Ok(())
 
-    Err(eyre!("Uh oh, stinky")).with_error_status(JobErrorStatus::Retryable)
+    // Err(eyre!("Uh oh, stinky")).with_error_status(JobErrorStatus::Retryable)
 }
