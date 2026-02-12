@@ -1,6 +1,13 @@
-use std::{borrow::Cow, panic::AssertUnwindSafe, pin::Pin, sync::Arc, task::Poll, time::Duration};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    panic::AssertUnwindSafe,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::Poll,
+    time::Duration,
+};
 
-use arc_swap::ArcSwap;
 use color_eyre::eyre::{self, Context, OptionExt, eyre};
 use futures_util::{FutureExt, Stream, StreamExt, future::CatchUnwind, ready};
 use opentelemetry_sdk::trace::SdkTracer;
@@ -16,7 +23,10 @@ use rdkafka::{
     producer::{FutureProducer, FutureRecord},
 };
 use serde::{Deserialize, Serialize};
-use tokio::time::{Instant, Sleep};
+use tokio::{
+    sync::mpsc,
+    time::{Instant, Sleep},
+};
 use tokio_util::{future::FutureExt as TokioFutureExt, sync::CancellationToken, task::TaskTracker};
 use tracing::Instrument;
 
@@ -122,11 +132,11 @@ async fn handle_failure<'a>(
 
     let topic = match error.status {
         JobErrorStatus::Retryable if max_failures >= retry_record.errors.len() => {
-            Cow::Owned(format!("email-queue-retry-{}", retry_record.errors.len()))
+            format!("{}-retry-{}", msg.topic(), retry_record.errors.len())
         }
         _ => {
             tracing::error!("Message made it to the DLQ");
-            Cow::Borrowed("email-queue-dlq")
+            format!("{}-dlq", msg.topic())
         }
     };
 
@@ -149,27 +159,44 @@ async fn handle_failure<'a>(
 }
 
 pub struct ParallelConsumerContext {
-    tasks: TaskTracker,
-    cancellation_token: Arc<ArcSwap<CancellationToken>>,
+    cancellations: Arc<Mutex<HashMap<(String, i32), CancellationToken>>>,
+    assignment_tx: mpsc::UnboundedSender<Vec<(String, i32)>>,
 }
 
 impl ClientContext for ParallelConsumerContext {}
 
 impl ConsumerContext for ParallelConsumerContext {
-    fn pre_rebalance(&self, _base_consumer: &BaseConsumer<Self>, _rebalance: &Rebalance<'_>) {
-        self.cancellation_token.load().cancel();
+    fn pre_rebalance(&self, _base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
+        if let Rebalance::Revoke(partitions) = rebalance {
+            let mut map = self.cancellations.lock().expect("Mutex poisoned");
+            for p in partitions.elements() {
+                if let Some(token) = map.remove(&(p.topic().to_string(), p.partition())) {
+                    token.cancel();
+                }
+            }
+        }
     }
 
-    fn post_rebalance(&self, _base_consumer: &BaseConsumer<Self>, _rebalance: &Rebalance<'_>) {
-        self.tasks.close();
+    fn post_rebalance(&self, _base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
+        if let Rebalance::Assign(partitions) = rebalance {
+            let list = partitions
+                .elements()
+                .iter()
+                .map(|p| (p.topic().to_string(), p.partition()))
+                .collect();
+            let _ = self.assignment_tx.send(list);
+        }
     }
 }
 
 impl ParallelConsumerContext {
-    fn new(tasks: TaskTracker, cancellation_token: Arc<ArcSwap<CancellationToken>>) -> Self {
+    fn new(
+        cancellations: Arc<Mutex<HashMap<(String, i32), CancellationToken>>>,
+        assignment_tx: mpsc::UnboundedSender<Vec<(String, i32)>>,
+    ) -> Self {
         Self {
-            tasks,
-            cancellation_token,
+            cancellations,
+            assignment_tx,
         }
     }
 }
@@ -182,7 +209,8 @@ pub async fn run(
     shutdown_signal: impl Future<Output = ()>,
 ) -> eyre::Result<()> {
     let tasks = TaskTracker::new();
-    let cancellation_token = Arc::new(ArcSwap::from_pointee(CancellationToken::new()));
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let cancellations = Arc::new(Mutex::new(HashMap::new()));
     let main_canceller = CancellationToken::new();
 
     let producer: FutureProducer = kafka_config
@@ -190,10 +218,7 @@ pub async fn run(
         .wrap_err("Failed to create kafka producer")?;
     let consumer: Arc<StreamConsumer<ParallelConsumerContext>> = Arc::new(
         kafka_config
-            .create_with_context(ParallelConsumerContext::new(
-                tasks.clone(),
-                Arc::clone(&cancellation_token),
-            ))
+            .create_with_context(ParallelConsumerContext::new(cancellations.clone(), tx))
             .wrap_err("Failed to create consumer")?,
     );
 
@@ -205,98 +230,91 @@ pub async fn run(
     tokio::pin!(shutdown_signal);
 
     loop {
-        tasks.reopen();
-        cancellation_token.store(Arc::new(CancellationToken::new()));
-        {
-            let assigned = consumer
-                .assignment()
-                .wrap_err("Failed to get assignments for consumer")?;
-
-            tracing::info!(num_tasks = assigned.count(), "Rebalancing");
-            for assignment in assigned.elements() {
-                let subconsumer = consumer
-                    .split_partition_queue(assignment.topic(), assignment.partition())
-                    .ok_or_eyre("Couldn't create subconsumer for topic and partition")?;
-
-                let token = cancellation_token.load_full();
-                let tracer = kafka_tracer.clone();
-                let producer = producer.clone();
-                let consumer = Arc::clone(&consumer);
-                tasks.spawn(
-                    async move {
-                        let mut consumer_stream = subconsumer.stream();
-
-                        while let Some(Some(msg)) =
-                            consumer_stream.next().with_cancellation_token(&token).await
-                        {
-                            let msg = msg.wrap_err("Failed to receive message from kafka")?;
-                            let span = telemetry::span_from_kafka_msg(&tracer, &msg);
-
-                            let result = SafeFutureRunner::new(
-                                emails::process_message(msg.payload()).instrument(span),
-                            )
-                            .with_cancellation_token(&token)
-                            .await;
-
-                            match result {
-                                Some(Err(e)) => {
-                                    handle_failure(
-                                        // Only matters for retry service
-                                        usize::MAX,
-                                        &producer,
-                                        &msg,
-                                        service_type,
-                                        None,
-                                        e,
-                                    )
-                                    .await?;
-                                }
-                                Some(Ok(_)) => {
-                                    if !token.is_cancelled() {
-                                        consumer
-                                            .store_offset_from_message(&msg)
-                                            .wrap_err("Failed to commit message to stream")?;
-                                    }
-                                }
-                                None => {}
-                            }
-                        }
-
-                        Ok::<(), eyre::Report>(())
-                    }
-                    .map({
-                        let token = main_canceller.clone();
-                        move |r| {
-                            // uuuuuuhhhh, maybe restarting will fix whatever happened?????
-                            if let Err(e) = r {
-                                tracing::error!("{}", e);
-                                token.cancel();
-                            }
-                        }
-                    }),
-                );
-            }
-
-            let token = cancellation_token.load_full();
-            let consumer = Arc::clone(&consumer);
-            tasks.spawn(async move {
-                let mut consumer_stream = consumer.stream();
-
-                loop {
-                    match consumer_stream.next().with_cancellation_token(&token).await {
-                        Some(_) => {
-                            tracing::warn!("Main consumer should not be receiving messages");
-                        }
-                        None => break,
-                    }
-                }
-            });
-        }
-
         tokio::select! {
-            _ = tasks.wait() => {}
+            Some(assignments) = rx.recv() => {
+                 for (topic, partition) in assignments {
+                    let mut map = cancellations.lock().expect("Mutex poisoned");
+                    if map.contains_key(&(topic.clone(), partition)) {
+                        continue;
+                    }
+
+                    let subconsumer = consumer
+                        .split_partition_queue(&topic, partition)
+                        .ok_or_else(|| {
+                            eyre!(
+                                "Failed to split partition queue for {}:{}",
+                                topic,
+                                partition
+                            )
+                        })?;
+
+                    let token = CancellationToken::new();
+                    map.insert((topic, partition), token.clone());
+
+                    let tracer = kafka_tracer.clone();
+                    let producer = producer.clone();
+                    let consumer = Arc::clone(&consumer);
+
+                    tasks.spawn(
+                        async move {
+                            let mut consumer_stream = subconsumer.stream();
+
+                            while let Some(Some(msg)) =
+                                consumer_stream.next().with_cancellation_token(&token).await
+                            {
+                                let msg = msg.wrap_err("Failed to receive message from kafka")?;
+                                let span = telemetry::span_from_kafka_msg(&tracer, &msg);
+
+                                let result = SafeFutureRunner::new(
+                                    emails::process_message(msg.payload()).instrument(span),
+                                )
+                                .with_cancellation_token(&token)
+                                .await;
+
+                                match result {
+                                    Some(Err(e)) => {
+                                        handle_failure(
+                                            // Only matters for retry service
+                                            usize::MAX,
+                                            &producer,
+                                            &msg,
+                                            service_type,
+                                            None,
+                                            e,
+                                        )
+                                        .await?;
+                                    }
+                                    Some(Ok(_)) => {
+                                        if !token.is_cancelled() {
+                                            consumer
+                                                .store_offset_from_message(&msg)
+                                                .wrap_err("Failed to commit message to stream")?;
+                                        }
+                                    }
+                                    None => {}
+                                }
+                            }
+
+                            Ok::<(), eyre::Report>(())
+                        }
+                        .map({
+                            let token = main_canceller.clone();
+                            move |r| {
+                                // uuuuuuhhhh, maybe restarting will fix whatever happened?????
+                                if let Err(e) = r {
+                                    tracing::error!("{}", e);
+                                    token.cancel();
+                                }
+                            }
+                        }),
+                    );
+                }
+            }
             _ = &mut shutdown_signal => {
-                cancellation_token.load().cancel();
+                let map = cancellations.lock().expect("Mutex poisoned");
+                for token in map.values() {
+                    token.cancel();
+                }
                 tasks.close();
                 tasks.wait().await;
                 break;

@@ -420,6 +420,7 @@ async fn main() -> eyre::Result<()> {
         .set("group.id", config.service.service_type.to_string())
         .set("enable.auto.commit", "true")
         .set("auto.commit.interval.ms", "5000")
+        .set("partition.assignment.strategy", "cooperative-sticky")
         .set("enable.auto.offset.store", "false")
         .set("bootstrap.servers", &config.kafka.brokers);
 

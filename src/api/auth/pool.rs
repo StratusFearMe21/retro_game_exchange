@@ -2,7 +2,9 @@ use std::num::NonZeroU32;
 
 use aws_lc_rs::pbkdf2;
 use axum::{
-    body::Bytes, extract::{FromRequestParts, OptionalFromRequestParts}, http::{HeaderValue, StatusCode}
+    body::Bytes,
+    extract::{FromRequestParts, OptionalFromRequestParts},
+    http::{HeaderValue, StatusCode},
 };
 use axum_extra::{
     TypedHeader,
@@ -23,7 +25,10 @@ use tracing::instrument;
 
 use crate::{
     ApiState,
-    api::{auth::DatabaseUser, users::{User, UserClaims}},
+    api::{
+        auth::DatabaseUser,
+        users::{User, UserClaims},
+    },
     error::{self, Actions, WithStatusCode},
     schema::users,
 };
@@ -55,7 +60,6 @@ pub struct DatabaseConnection(
     pub CookieJar,
     pub Option<User>,
 );
-
 
 impl FromRequestParts<ApiState> for DatabaseConnection {
     type Rejection = error::Error;
@@ -105,7 +109,7 @@ impl FromRequestParts<ApiState> for DatabaseConnection {
                 User {
                     id: db_user.id,
                     username: db_user.username
-                }                    
+                }
             );
         }
 
