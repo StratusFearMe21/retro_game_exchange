@@ -31,10 +31,7 @@ use diesel_async::{
     pooled_connection::{AsyncDieselConnectionManager, ManagerConfig, bb8},
 };
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
-use futures_util::{
-    FutureExt, StreamExt,
-    future::{self, Either},
-};
+use futures_util::FutureExt;
 use jsonwebtoken::{
     DecodingKey, EncodingKey,
     jwk::{Jwk, JwkSet},
@@ -42,12 +39,8 @@ use jsonwebtoken::{
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use pin_project_lite::pin_project;
-use rdkafka::{
-    ClientConfig,
-    consumer::{Consumer, StreamConsumer},
-    producer::FutureProducer,
-};
-use serde::Deserialize;
+use rdkafka::{ClientConfig, producer::FutureProducer};
+use serde::{Deserialize, Serialize};
 use telemetry::init_tracing_provider;
 use tokio::{net::TcpListener, signal};
 use tower::{Layer, Service, ServiceBuilder};
@@ -58,7 +51,7 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
     trace::{DefaultMakeSpan, TraceLayer},
 };
-use tracing::{Instrument, Level};
+use tracing::Level;
 use tracing_error::ErrorLayer;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -79,6 +72,7 @@ mod error;
 mod html_or_json;
 mod htmx;
 mod json_or_form;
+mod kafka;
 mod telemetry;
 mod uri_util;
 
@@ -199,7 +193,7 @@ const fn default_listen_addr() -> SocketAddr {
     SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 3000, 0, 0))
 }
 
-#[derive(Debug, ValueEnum, Deserialize, Clone, Copy, Default)]
+#[derive(Debug, ValueEnum, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum ServiceType {
     Auth,
@@ -255,6 +249,12 @@ struct KafkaConfig {
     #[clap(long, env = "KAFKA_EMAIL_TOPIC")]
     #[serde(default)]
     email_topic: Arc<str>,
+    #[clap(long, env = "KAFKA_RETRIER")]
+    #[serde(default)]
+    retrier: bool,
+    #[clap(long, value_delimiter = ',', env = "KAFKA_RETRY_WAIT_MINS")]
+    #[serde(default)]
+    retry_wait_mins: Vec<u64>,
 }
 
 #[derive(Parser, Deserialize)]
@@ -418,6 +418,9 @@ async fn main() -> eyre::Result<()> {
     kafka_config
         .set("client.id", &config.service.id)
         .set("group.id", config.service.service_type.to_string())
+        .set("enable.auto.commit", "true")
+        .set("auto.commit.interval.ms", "5000")
+        .set("enable.auto.offset.store", "false")
         .set("bootstrap.servers", &config.kafka.brokers);
 
     if config.reembed {
@@ -526,33 +529,25 @@ async fn main() -> eyre::Result<()> {
 
     match config.service.service_type {
         ServiceType::Email => {
-            let consumer: StreamConsumer = kafka_config
-                .create()
-                .wrap_err("Failed to create email consumer")?;
-
-            consumer
-                .subscribe(&[&config.kafka.email_topic])
-                .wrap_err("Failed to subscribe to email topic")?;
-
-            tokio::pin!(shutdown_signal);
-
-            let mut consumer_stream = consumer.stream();
-
-            while let Either::Left((Some(msg), _)) =
-                future::select(consumer_stream.next(), &mut shutdown_signal).await
-            {
-                let msg = msg.wrap_err("Failed to receive email message from kafka")?;
-                let span = telemetry::span_from_kafka_msg(&kafka_tracer, &msg);
-
-                tokio::spawn(
-                    emails::process_message(msg.detach())
-                        .map(move |result| {
-                            if let Err(e) = result {
-                                tracing::error!("{}", e);
-                            }
-                        })
-                        .instrument(span),
-                );
+            if config.kafka.retrier {
+                kafka::retrier(
+                    &config.kafka.email_topic,
+                    config.service.service_type,
+                    &config.kafka.retry_wait_mins,
+                    kafka_config,
+                    &kafka_tracer,
+                    shutdown_signal,
+                )
+                .await?;
+            } else {
+                kafka::run(
+                    &config.kafka.email_topic,
+                    config.service.service_type,
+                    kafka_config,
+                    &kafka_tracer,
+                    shutdown_signal,
+                )
+                .await?;
             }
         }
         ServiceType::Auth | ServiceType::Main => {

@@ -1,5 +1,5 @@
 receivers:
-  otlp/automq:
+  otlp/redpanda:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
@@ -91,15 +91,15 @@ service:
   extensions: [health_check]
   pipelines:
     metrics:
-      receivers: [postgresql, otlp/automq, otlp/rustfs]
+      receivers: [postgresql, otlp/redpanda, otlp/rustfs]
       processors: [batch]
       exporters: [prometheus]
     traces:
-      receivers: [otlp/rge, otlp/automq, otlp/kong, otlp/rustfs]
+      receivers: [otlp/rge, otlp/redpanda, otlp/kong, otlp/rustfs]
       processors: [batch]
       exporters: [otlphttp/traces]
     logs:
-      receivers: [otlp/rge, otlp/automq, otlp/kong, otlp/rustfs]
+      receivers: [otlp/rge, otlp/redpanda, otlp/kong, otlp/rustfs]
       processors: [batch]
       exporters: [otlphttp/logs]
   telemetry:

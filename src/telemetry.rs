@@ -231,9 +231,18 @@ pub fn span_from_kafka_msg(tracer: &SdkTracer, msg: &BorrowedMessage<'_>) -> tra
         tracer.build(span_builder)
     };
 
+    kafka_msg_span.set_attributes([
+        KeyValue::new("topic", msg.topic().to_owned()),
+        KeyValue::new("partition", msg.partition() as i64),
+    ]);
+
     kafka_msg_span.end_with_timestamp(time);
 
-    let span = tracing::info_span!("kafka-message");
+    let span = tracing::info_span!(
+        "kafka-message",
+        topic = msg.topic(),
+        partition = msg.partition()
+    );
     span.set_parent(opentelemetry::Context::map_current(|cx| {
         cx.with_remote_span_context(kafka_msg_span.span_context().clone())
     }))

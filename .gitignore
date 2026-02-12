@@ -2,3 +2,4 @@
 .env
 retro-game-exchange.zip
 volumes/rustfs
+*.orig

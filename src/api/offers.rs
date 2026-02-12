@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ops::Deref;
 use std::time::Duration;
 
@@ -201,7 +202,6 @@ pub async fn get_offers(
     Query(search): Query<OfferQuery>,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
     TypedHeader(hx_request): TypedHeader<HxRequest>,
-    JsonOrForm(game_offer): JsonOrForm<InsertableGameOffer>,
 ) -> Result<HtmlOrJsonOnce<AllOffersTemplate>, error::Error> {
     if let Some(user) = user {
         let offers = conditional_query!(
@@ -379,7 +379,7 @@ pub async fn offer_game(
                     .payload(
                         &postcard::to_stdvec(&Email {
                             to_id: user.id,
-                            email_string: String::from("Created an offer"),
+                            email_string: Cow::Borrowed("Created an offer"),
                         })
                         .wrap_err("Failed to serialize email message")
                         .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?,

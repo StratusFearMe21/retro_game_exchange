@@ -114,70 +114,71 @@ services:
     depends_on:
       rustfs:
         condition: service_healthy
-    # /usr/bin/rc rm -r --force rustfs/automq-data;
-    # /usr/bin/rc rm -r --force rustfs/automq-ops;
     entrypoint: >
       /bin/sh -c "
       until (/usr/bin/rc alias set rustfs http://rustfs:9000 rustfsadmin rustfsadmin) do echo '...waiting...' && sleep 1; done;
-      /usr/bin/rc mb rustfs/automq-data;
-      /usr/bin/rc mb rustfs/automq-ops;
       /usr/bin/rc mb rustfs/tempo;
       /usr/bin/rc mb rustfs/loki-data;
       /usr/bin/rc mb rustfs/loki-ruler;
-      /usr/bin/rc anonymous set public rustfs/automq-data;
-      /usr/bin/rc anonymous set public rustfs/automq-ops;
       /usr/bin/rc anonymous set public rustfs/tempo;
       /usr/bin/rc anonymous set public rustfs/loki-data;
       /usr/bin/rc anonymous set public rustfs/loki-ruler;
       tail -f /dev/null
       "
 
-  automq:
-    image: automqinc/automq:latest
-    stop_grace_period: 1m
-    environment:
-      - KAFKA_S3_ACCESS_KEY=rustfsadmin
-      - KAFKA_S3_SECRET_KEY=rustfsadmin
-      - KAFKA_HEAP_OPTS=-Xms1g -Xmx4g -XX:MetaspaceSize=96m -XX:MaxDirectMemorySize=1G
-      # Replace CLUSTER_ID with a unique base64 UUID using "bin/kafka-storage.sh random-uuid"
-      - CLUSTER_ID=7-HBFlOcTwGil1il4fLBHw
-    volumes:
-      - automq_data:/root/kraft-logs
+  redpanda-0:
     command:
-      - bash
-      - -c
-      - |
-        /opt/automq/kafka/bin/kafka-server-start.sh \
-        /opt/automq/kafka/config/kraft/server.properties \
-        --override cluster.id=$$CLUSTER_ID \
-        --override node.id=0 \
-        --override controller.quorum.voters=0@automq:9093 \
-        --override controller.quorum.bootstrap.servers=automq:9093 \
-        --override advertised.listeners=PLAINTEXT://automq:9092 \
-        --override s3.telemetry.metrics.exporter.type=otlp \
-        --override s3.telemetry.exporter.otlp.protocol=grpc \
-        --override s3.telemetry.exporter.otlp.endpoint=http://otel-collector:4317 \
-        --override s3.object.log.enable=true \
-        --override s3.data.buckets='0@s3://automq-data?region=us-east-1&endpoint=http://rustfs:9000&pathStyle=true' \
-        --override s3.ops.buckets='1@s3://automq-ops?region=us-east-1&endpoint=http://rustfs:9000&pathStyle=true' \
-        --override log.dirs='/root/kraft-logs' \
-        --override s3.wal.path='0@s3://automq-data?region=us-east-1&endpoint=http://rustfs:9000&pathStyle=true'
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      # Address the broker advertises to clients that connect to the Kafka API.
+      # Use the internal addresses to connect to the Redpanda brokers'
+      # from inside the same Docker network.
+      # Use the external addresses to connect to the Redpanda brokers'
+      # from outside the Docker network.
+      - --advertise-kafka-addr internal://redpanda-0:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      # Address the broker advertises to clients that connect to the HTTP Proxy.
+      - --advertise-pandaproxy-addr internal://redpanda-0:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      # Redpanda brokers use the RPC API to communicate with each other internally.
+      - --rpc-addr redpanda-0:33145
+      - --advertise-rpc-addr redpanda-0:33145
+      # Mode dev-container uses well-known configuration properties for development in containers.
+      - --mode dev-container
+      # Tells Seastar (the framework Redpanda uses under the hood) to use 1 core on the system.
+      - --smp 1
+      - --default-log-level=info
+    image: docker.redpanda.com/redpandadata/redpanda:v25.3.6
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info"]
+      interval: 10s
+      timeout: 15s
+      retries: 10
     depends_on:
-      - rustfs
-      - rc
       - otel-collector
+    # ports:
+    #   - 18081:18081
+    #   - 18082:18082
+    #   - 19092:19092
+    #   - 19644:9644
 
-  automq-create-topics:
-    image: automqinc/automq:latest
+
+  redpanda-create-topics:
+    image: docker.redpanda.com/redpandadata/redpanda:v25.3.6
     depends_on:
-      automq:
-        condition: service_started
-    # /usr/bin/rc rm -r --force rustfs/automq-data;
-    # /usr/bin/rc rm -r --force rustfs/automq-ops;
+      redpanda-0:
+        condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      kafka/bin/kafka-topics.sh --bootstrap-server automq:9092 --create --if-not-exists --topic tempo-ingest --partitions 1 --replication-factor 1;
-      kafka/bin/kafka-topics.sh --bootstrap-server automq:9092 --create --if-not-exists --topic email-queue --partitions 3 --replication-factor 1;
+      rpk topic create tempo-ingest --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
+      rpk topic create email-queue --brokers redpanda-0:9092 --if-not-exists --partitions 32 --replicas 1;
+      rpk topic create email-queue-retry-1 --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
+      rpk topic create email-queue-retry-2 --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
+      rpk topic create email-queue-retry-3 --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
+      rpk topic create email-queue-dlq --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
       tail -f /dev/null
       "
 
@@ -204,7 +205,7 @@ services:
   tempo:
     image: grafana/tempo:latest
     depends_on:
-      - automq-create-topics
+      - redpanda-create-topics
     command: "-target=all -config.file=/etc/tempo.yaml"
     restart: always
     volumes:
@@ -278,7 +279,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      automq-create-topics:
+      redpanda-create-topics:
         condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
@@ -293,7 +294,7 @@ services:
       SERVICE_TYPE: auth
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4320
       KAFKA_OTLP_ENDPOINT: http://otel-collector:4317
-      KAFKA_BROKERS: automq:9092
+      KAFKA_BROKERS: redpanda-0:9092
       KAFKA_EMAIL_TOPIC: email-queue
       # RUST_LOG: debug
     deploy:
@@ -307,7 +308,7 @@ services:
         condition: service_healthy
       web-auth:
         condition: service_healthy
-      automq-create-topics:
+      redpanda-create-topics:
         condition: service_started
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
@@ -323,7 +324,7 @@ services:
       AUTH_SERVICE: http://web-auth:3000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4320
       KAFKA_OTLP_ENDPOINT: http://otel-collector:4317
-      KAFKA_BROKERS: automq:9092
+      KAFKA_BROKERS: redpanda-0:9092
       KAFKA_EMAIL_TOPIC: email-queue
       # RUST_LOG: debug
     extra_hosts:
@@ -334,6 +335,42 @@ services:
       mode: replicated
       replicas: 3
 
+  web-email-retry:
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      web-auth:
+        condition: service_healthy
+      redpanda-create-topics:
+        condition: service_started
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+    #   interval: 5s
+    #   timeout: 5s
+    #   retries: 10
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      DATABASE_URL: postgres://docker:example@db/docker
+      SERVICE_TYPE: email
+      AUTH_SERVICE: http://web-auth:3000
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4320
+      KAFKA_OTLP_ENDPOINT: http://otel-collector:4317
+      KAFKA_BROKERS: redpanda-0:9092
+      KAFKA_RETRIER: true
+      KAFKA_RETRY_WAIT_MINS: 1,10,60
+      KAFKA_EMAIL_TOPIC: email-queue
+      # RUST_LOG: debug
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    models:
+      - embedding-model
+    deploy:
+      mode: replicated
+      replicas: 1
+
   web:
     restart: unless-stopped
     depends_on:
@@ -341,7 +378,7 @@ services:
         condition: service_healthy
       web-auth:
         condition: service_healthy
-      automq-create-topics:
+      redpanda-create-topics:
         condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
@@ -356,7 +393,7 @@ services:
       AUTH_SERVICE: http://web-auth:3000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4320
       KAFKA_OTLP_ENDPOINT: http://otel-collector:4317
-      KAFKA_BROKERS: automq:9092
+      KAFKA_BROKERS: redpanda-0:9092
       KAFKA_EMAIL_TOPIC: email-queue
       # RUST_LOG: debug
     extra_hosts:
@@ -374,7 +411,7 @@ models:
 
 volumes:
   pgdata:
-  automq_data:
+  redpanda_data:
   prom_data:
   tempo_data:
   grafana_data:

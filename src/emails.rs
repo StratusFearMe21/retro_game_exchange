@@ -1,22 +1,28 @@
-use color_eyre::eyre::{self, Context, OptionExt};
-use rdkafka::{Message, message::OwnedMessage};
+use std::borrow::Cow;
+
+use color_eyre::eyre::{Context, OptionExt, eyre};
 use serde::{Deserialize, Serialize};
 
+use crate::kafka::{JobError, JobErrorStatus, WithErrorStatus};
+
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Email {
+pub struct Email<'a> {
     pub to_id: i32,
-    pub email_string: String,
+    pub email_string: Cow<'a, str>,
 }
 
-pub async fn process_message(message: OwnedMessage) -> eyre::Result<()> {
+pub async fn process_message(message: Option<&[u8]>) -> Result<(), JobError> {
     let email: Email = postcard::from_bytes(
         message
-            .payload()
-            .ok_or_eyre("The message contained no payload")?,
+            .ok_or_eyre("The message contained no payload")
+            .with_error_status(JobErrorStatus::NotRetryable)?,
     )
-    .wrap_err("Failed to deserialize email message")?;
+    .wrap_err("Failed to deserialize email message")
+    .with_error_status(JobErrorStatus::NotRetryable)?;
 
     tracing::info!(?email, "Sending email");
 
-    Ok(())
+    // Ok(())
+
+    Err(eyre!("Uh oh, stinky")).with_error_status(JobErrorStatus::Retryable)
 }

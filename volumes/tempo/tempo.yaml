@@ -74,7 +74,7 @@ overrides:
 ingest:
   enabled: true
   kafka:
-    address: automq:9092
+    address: redpanda-0:9092
     topic: tempo-ingest
 
 block_builder:

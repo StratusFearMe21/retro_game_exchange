@@ -29,7 +29,7 @@ COPY ./frontend ./frontend
 
 RUN corepack enable pnpm && pnpm run -C frontend build
 
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.93.0 AS chef
 WORKDIR /app
 
 FROM chef AS planner
@@ -48,13 +48,16 @@ COPY . .
 COPY --from=builder-js /app/frontend/dist frontend/dist
 RUN cargo build --release --bin retro-game-exchange
 
-# We do not need the Rust toolchain to run the binary!
-FROM debian:trixie-slim AS runtime
-WORKDIR /app
-COPY ./docker/docker-entrypoint.sh /usr/local/bin
+FROM debian:trixie-slim AS runtime-base
 RUN apt-get update; \
   apt-get upgrade -y; \
   apt-get install curl dnsutils -y
+WORKDIR /app
+
+
+# We do not need the Rust toolchain to run the binary!
+FROM runtime-base AS runtime
+COPY ./docker/docker-entrypoint.sh /usr/local/bin
 COPY --from=builder-rs /app/target/release/retro-game-exchange /usr/local/bin
 COPY --from=builder-js /app/frontend/dist frontend/dist
 

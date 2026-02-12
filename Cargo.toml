@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arc-swap = "1.8.1"
 aws-lc-rs = "1.15.4"
 axum = { version = "0.8.6", features = ["macros"] }
 axum-extra = { version = "0.12.5", features = ["typed-header", "cookie"] }
@@ -40,6 +41,7 @@ serde_urlencoded = "0.7.1"
 serde_with = "3.16.1"
 supports-color = "3.0.2"
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "signal"] }
+tokio-util = { version = "0.7.18", features = ["rt"] }
 tower = "0.5.2"
 tower-http = { version = "0.6.6", features = ["catch-panic", "fs", "set-header", "trace", "compression-br", "compression-gzip"] }
 tracing = "0.1.41"
