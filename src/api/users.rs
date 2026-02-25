@@ -13,7 +13,7 @@ use crate::{
     schema::users,
 };
 
-#[derive(HasQuery, ToSchema, Deserialize, Serialize, Debug, Default)]
+#[derive(HasQuery, ToSchema, Deserialize, Serialize, Debug, Default, Clone)]
 #[diesel(table_name = crate::schema::users)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct User {
@@ -41,7 +41,14 @@ pub fn serialize_user_id<S>(user: &User, serializer: S) -> Result<S::Ok, S::Erro
 where
     S: Serializer,
 {
-    serializer.serialize_str(&format!("/users/{}", user.id))
+    serialize_user_id_i32(&user.id, serializer)
+}
+
+pub fn serialize_user_id_i32<S>(user: &i32, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&format!("/users/{}", user))
 }
 
 #[utoipa::path(

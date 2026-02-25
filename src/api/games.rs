@@ -129,7 +129,7 @@ pub struct GameModel {
     #[diesel(embed)]
     #[schema(value_type = String)]
     #[serde(serialize_with = "serialize_user_id")]
-    user: User,
+    pub user: User,
 }
 
 #[derive(Clone, Copy, DbEnum, ToSchema, Deserialize, Serialize, Debug, PartialEq)]

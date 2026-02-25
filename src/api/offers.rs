@@ -22,13 +22,15 @@ use tracing::instrument;
 use utoipa::ToSchema;
 
 use crate::KafkaState;
-use crate::emails::Email;
+use crate::api::games::GameModel;
+use crate::kafka::KafkaMessage;
+use crate::schema::games;
 use crate::telemetry::KafkaOwnedHeaderCarrier;
 use crate::{
     Placeholder,
     api::{
         auth::pool::DatabaseConnection,
-        users::{User, serialize_user_id},
+        users::{User, serialize_user_id, serialize_user_id_i32},
     },
     conditional_query,
     error::{self, Error, WithStatusCode},
@@ -47,6 +49,8 @@ pub struct InsertableGameOffer {
     for_game: i32,
     #[serde(skip)]
     made_by: i32,
+    #[serde(skip)]
+    made_to: i32,
 }
 
 impl Placeholder for InsertableGameOffer {
@@ -55,22 +59,25 @@ impl Placeholder for InsertableGameOffer {
             offer_up: 0,
             for_game: 1,
             made_by: 0,
+            made_to: 1,
         }
     }
 }
 
-#[derive(HasQuery, ToSchema, Deserialize, Serialize, Debug)]
+#[derive(HasQuery, ToSchema, Deserialize, Serialize, Debug, Clone)]
 #[diesel(table_name = crate::schema::offers)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 #[diesel(base_query = offers::table.inner_join(users::table))]
 pub struct GameOffer {
-    offer_up: i32,
-    for_game: i32,
+    pub offer_up: i32,
+    pub for_game: i32,
     #[diesel(embed)]
     #[schema(value_type = String)]
     #[serde(serialize_with = "serialize_user_id")]
-    made_by: User,
-    offer_status: OfferStatus,
+    pub made_to: User,
+    #[serde(serialize_with = "serialize_user_id_i32")]
+    pub made_by: i32,
+    pub offer_status: OfferStatus,
 }
 
 #[derive(AsChangeset, ToSchema, Deserialize, Serialize, Debug)]
@@ -98,7 +105,8 @@ impl Placeholder for GameOffer {
         Self {
             offer_up: 0,
             for_game: 1,
-            made_by: User::placeholder(),
+            made_to: User::placeholder(),
+            made_by: 0,
             offer_status: OfferStatus::Up,
         }
     }
@@ -277,6 +285,7 @@ pub async fn get_offers(
 #[instrument(skip(conn))]
 pub async fn patch_offer(
     DatabaseConnection(mut conn, jar, user): DatabaseConnection,
+    kafka_state: KafkaState,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
     TypedHeader(hx_request): TypedHeader<HxRequest>,
     JsonOrForm(game_offer): JsonOrForm<ChangesetOffer>,
@@ -304,6 +313,27 @@ pub async fn patch_offer(
             .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?
             .ok_or_eyre("Couldn't find that offer")
             .with_status_code(StatusCode::NOT_FOUND)?;
+
+        kafka_state
+            .producer
+            .send(
+                FutureRecord::<[u8], _>::to(kafka_state.offer_topic.deref())
+                    .payload(
+                        &postcard::to_stdvec(&KafkaMessage::VideoGameOfferChanged(offer.clone()))
+                            .wrap_err("Failed to serialize offer message")
+                            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?,
+                    )
+                    .headers(global::get_text_map_propagator(|propagator| {
+                        let mut headers = OwnedHeaders::new();
+                        propagator.inject(&mut KafkaOwnedHeaderCarrier::new(&mut headers));
+                        headers
+                    })),
+                Duration::from_secs(0),
+            )
+            .await
+            .map_err(|e| e.0)
+            .wrap_err("Failed to send offer message to kafka")
+            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
         Ok(HtmlOrJsonSimple(
             accept,
@@ -365,6 +395,18 @@ pub async fn offer_game(
         let for_game = game_offer.for_game;
         game_offer.made_by = user.id;
 
+        let offeree = GameModel::query()
+            .filter(games::id.eq(game_offer.for_game))
+            .first(&mut conn)
+            .await
+            .optional()
+            .wrap_err("Failed to get game to offer for")
+            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or_eyre("Game to offer for not found")
+            .with_status_code(StatusCode::NOT_FOUND)?;
+
+        game_offer.made_to = offeree.user.id;
+
         diesel::insert_into(offers::table)
             .values(game_offer)
             .execute(&mut conn)
@@ -372,17 +414,25 @@ pub async fn offer_game(
             .wrap_err("Failed to insert offer into database")
             .with_status_code(StatusCode::UNPROCESSABLE_ENTITY)?;
 
+        let offer = GameOffer::query()
+            .filter(offers::offer_up.eq(offer_up))
+            .filter(offers::for_game.eq(for_game))
+            .first(&mut conn)
+            .await
+            .optional()
+            .wrap_err("Failed to get created offer")
+            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or_eyre("Couldn't find that offer")
+            .with_status_code(StatusCode::NOT_FOUND)?;
+
         kafka_state
             .producer
             .send(
-                FutureRecord::<[u8], _>::to(kafka_state.email_topic.deref())
+                FutureRecord::<[u8], _>::to(kafka_state.offer_topic.deref())
                     .payload(
-                        &postcard::to_stdvec(&Email {
-                            to_id: user.id,
-                            email_string: Cow::Borrowed("Created an offer"),
-                        })
-                        .wrap_err("Failed to serialize email message")
-                        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?,
+                        &postcard::to_stdvec(&KafkaMessage::VideoGameOfferChanged(offer.clone()))
+                            .wrap_err("Failed to serialize email message")
+                            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?,
                     )
                     .headers(global::get_text_map_propagator(|propagator| {
                         let mut headers = OwnedHeaders::new();
@@ -395,17 +445,6 @@ pub async fn offer_game(
             .map_err(|e| e.0)
             .wrap_err("Failed to send email message to kafka")
             .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        let offer = GameOffer::query()
-            .filter(offers::offer_up.eq(offer_up))
-            .filter(offers::for_game.eq(for_game))
-            .first(&mut conn)
-            .await
-            .optional()
-            .wrap_err("Failed to get created offer")
-            .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?
-            .ok_or_eyre("Couldn't find that offer")
-            .with_status_code(StatusCode::NOT_FOUND)?;
 
         Ok(HtmlOrJsonSimple(
             accept,

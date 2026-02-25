@@ -174,11 +174,16 @@ services:
     entrypoint: >
       /bin/sh -c "
       rpk topic create tempo-ingest --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
-      rpk topic create email-queue --brokers redpanda-0:9092 --if-not-exists --partitions 32 --replicas 1;
-      rpk topic create email-queue-retry-1 --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
-      rpk topic create email-queue-retry-2 --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
-      rpk topic create email-queue-retry-3 --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
-      rpk topic create email-queue-dlq --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
+      rpk topic create user-queue --brokers redpanda-0:9092 --if-not-exists --partitions 32 --replicas 1;
+      rpk topic create user-queue-retry-1 --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
+      rpk topic create user-queue-retry-2 --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
+      rpk topic create user-queue-retry-3 --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
+      rpk topic create user-queue-dlq --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
+      rpk topic create offer-queue --brokers redpanda-0:9092 --if-not-exists --partitions 32 --replicas 1;
+      rpk topic create offer-queue-retry-1 --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
+      rpk topic create offer-queue-retry-2 --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
+      rpk topic create offer-queue-retry-3 --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
+      rpk topic create offer-queue-dlq --brokers redpanda-0:9092 --if-not-exists --partitions 1 --replicas 1;
       tail -f /dev/null
       "
 
@@ -295,7 +300,8 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4320
       KAFKA_OTLP_ENDPOINT: http://otel-collector:4317
       KAFKA_BROKERS: redpanda-0:9092
-      KAFKA_EMAIL_TOPIC: email-queue
+      KAFKA_USER_TOPIC: user-queue
+      KAFKA_OFFER_TOPIC: offer-queue
       # RUST_LOG: debug
     deploy:
       mode: replicated
@@ -325,7 +331,8 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4320
       KAFKA_OTLP_ENDPOINT: http://otel-collector:4317
       KAFKA_BROKERS: redpanda-0:9092
-      KAFKA_EMAIL_TOPIC: email-queue
+      KAFKA_USER_TOPIC: user-queue
+      KAFKA_OFFER_TOPIC: offer-queue
       # RUST_LOG: debug
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -361,7 +368,8 @@ services:
       KAFKA_BROKERS: redpanda-0:9092
       KAFKA_RETRIER: true
       KAFKA_RETRY_WAIT_MINS: 1,10,60
-      KAFKA_EMAIL_TOPIC: email-queue
+      KAFKA_USER_TOPIC: user-queue
+      KAFKA_OFFER_TOPIC: offer-queue
       # RUST_LOG: debug
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -394,7 +402,8 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4320
       KAFKA_OTLP_ENDPOINT: http://otel-collector:4317
       KAFKA_BROKERS: redpanda-0:9092
-      KAFKA_EMAIL_TOPIC: email-queue
+      KAFKA_USER_TOPIC: user-queue
+      KAFKA_OFFER_TOPIC: offer-queue
       # RUST_LOG: debug
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -39,6 +39,7 @@ diesel::table! {
         offer_up -> Int4,
         for_game -> Int4,
         made_by -> Int4,
+        made_to -> Int4,
         offer_status -> OfferStatus,
     }
 }
@@ -64,6 +65,6 @@ diesel::table! {
 }
 
 diesel::joinable!(games -> users (owned_by));
-diesel::joinable!(offers -> users (made_by));
+diesel::joinable!(offers -> users (made_to));
 
 diesel::allow_tables_to_appear_in_same_query!(games, offers, users,);

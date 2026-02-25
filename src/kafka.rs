@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     collections::HashMap,
+    ops::Deref,
     panic::AssertUnwindSafe,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -34,7 +35,17 @@ use tokio::{
 use tokio_util::{future::FutureExt as TokioFutureExt, sync::CancellationToken, task::TaskTracker};
 use tracing::Instrument;
 
-use crate::{ServiceType, emails, telemetry};
+use crate::{
+    KafkaState, ServiceType,
+    api::{offers::GameOffer, users::User},
+    emails, telemetry,
+};
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum KafkaMessage {
+    UserInformationChanged(User),
+    VideoGameOfferChanged(GameOffer),
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct RetryRecord<'a> {
@@ -207,7 +218,7 @@ impl ParallelConsumerContext {
 }
 
 pub async fn run(
-    topic: &str,
+    state: KafkaState,
     service_type: ServiceType,
     kafka_config: ClientConfig,
     kafka_tracer: &SdkTracer,
@@ -218,9 +229,6 @@ pub async fn run(
     let cancellations = Arc::new(Mutex::new(HashMap::new()));
     let main_canceller = CancellationToken::new();
 
-    let producer: FutureProducer = kafka_config
-        .create()
-        .wrap_err("Failed to create kafka producer")?;
     let consumer: Arc<StreamConsumer<ParallelConsumerContext>> = Arc::new(
         kafka_config
             .create_with_context(ParallelConsumerContext::new(cancellations.clone(), tx))
@@ -228,7 +236,7 @@ pub async fn run(
     );
 
     consumer
-        .subscribe(&[topic])
+        .subscribe(&[&state.user_topic, &state.offer_topic])
         .wrap_err("Failed to subscribe to  topic")?;
 
     let shutdown_signal = shutdown_signal.with_cancellation_token(&main_canceller);
@@ -266,7 +274,7 @@ pub async fn run(
                     map.insert((topic.clone(), partition), token.clone());
 
                     let tracer = kafka_tracer.clone();
-                    let producer = producer.clone();
+                    let producer = state.producer.clone();
                     let consumer = Arc::clone(&consumer);
 
                     tasks.spawn(
@@ -429,7 +437,7 @@ async fn decode_retry_record(payload: Option<&[u8]>) -> Result<RetryRecord<'_>, 
 }
 
 pub async fn retrier(
-    topic: &str,
+    state: KafkaState,
     service_type: ServiceType,
     retry_wait_mins: &[u64],
     kafka_config: ClientConfig,
@@ -447,7 +455,12 @@ pub async fn retrier(
 
     {
         let topics = (0..retry_wait_mins.len())
-            .map(|retry| format!("{}-retry-{}", topic, retry + 1))
+            .flat_map(|retry| {
+                [
+                    format!("{}-retry-{}", state.user_topic, retry + 1),
+                    format!("{}-retry-{}", state.offer_topic, retry + 1),
+                ]
+            })
             .collect::<Vec<_>>();
 
         let topics = topics.iter().map(|t| t.as_str()).collect::<Vec<_>>();
@@ -460,10 +473,15 @@ pub async fn retrier(
     let consumer_partition_queues = retry_wait_mins
         .iter()
         .enumerate()
-        .map(|(retry, _)| {
-            consumer
-                .split_partition_queue(&format!("{}-retry-{}", topic, retry + 1), 0)
-                .expect("Failed to split partition queue")
+        .flat_map(|(retry, _)| {
+            [
+                consumer
+                    .split_partition_queue(&format!("{}-retry-{}", state.user_topic, retry + 1), 0)
+                    .expect("Failed to split partition queue"),
+                consumer
+                    .split_partition_queue(&format!("{}-retry-{}", state.offer_topic, retry + 1), 0)
+                    .expect("Failed to split partition queue"),
+            ]
         })
         .collect::<Vec<_>>();
 
@@ -498,6 +516,15 @@ pub async fn retrier(
         'job_process: {
             let span = telemetry::span_from_kafka_msg(&kafka_tracer, &msg);
 
+            let topic = if msg.topic().starts_with(state.user_topic.deref()) {
+                &state.user_topic
+            } else if msg.topic().starts_with(state.offer_topic.deref()) {
+                &state.offer_topic
+            } else {
+                tracing::error!("A message failed from an unknown topic: `{}`", msg.topic());
+                break 'job_process;
+            };
+
             let retry_record = match SafeFutureRunner::new(
                 decode_retry_record(msg.payload()).instrument(span.clone()),
             )
@@ -507,7 +534,7 @@ pub async fn retrier(
                 Err(e) => {
                     handle_failure(
                         retry_wait_mins.len(),
-                        topic,
+                        topic.deref(),
                         &producer,
                         &msg,
                         service_type,
@@ -530,7 +557,7 @@ pub async fn retrier(
             {
                 handle_failure(
                     retry_wait_mins.len(),
-                    topic,
+                    topic.deref(),
                     &producer,
                     &msg,
                     service_type,

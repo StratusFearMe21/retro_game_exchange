@@ -1,4 +1,6 @@
-use std::{borrow::Cow, convert::Infallible, num::NonZeroU32, sync::OnceLock};
+use std::{
+    borrow::Cow, convert::Infallible, num::NonZeroU32, ops::Deref, sync::OnceLock, time::Duration,
+};
 
 use aws_lc_rs::{digest, pbkdf2};
 use axum::{
@@ -25,6 +27,8 @@ use diesel::{
     sql_types,
 };
 use diesel_async::RunQueryDsl;
+use opentelemetry::global;
+use rdkafka::{message::OwnedHeaders, producer::FutureRecord};
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use utoipa::{
@@ -43,7 +47,7 @@ pub type Salt = [u8; SALT_LEN];
 pub static JWT_HEADER: OnceLock<jsonwebtoken::Header> = OnceLock::new();
 
 use crate::{
-    ApiState, Placeholder,
+    ApiState, KafkaState, Placeholder,
     api::{
         auth::pool::DatabaseConnection,
         users::{User, UserClaims},
@@ -52,7 +56,9 @@ use crate::{
     html_or_json::HtmlOrJsonHeader,
     htmx::{HxLocation, HxRefresh, HxRequest},
     json_or_form::JsonOrForm,
+    kafka::KafkaMessage,
     schema::users,
+    telemetry::KafkaOwnedHeaderCarrier,
 };
 
 #[repr(transparent)]
@@ -507,6 +513,7 @@ pub async fn login(
 pub async fn edit_login(
     DatabaseConnection(mut conn, jar, user): DatabaseConnection,
     encoding_key: Option<EncodingKeyExtractor>,
+    kafka_state: KafkaState,
     TypedHeader(accept): TypedHeader<HtmlOrJsonHeader>,
     JsonOrForm(changeset_user): JsonOrForm<InsertableDatabaseUser>,
 ) -> Result<(CookieJar, TypedHeader<HxRefresh>), error::Error> {
@@ -525,6 +532,27 @@ pub async fn edit_login(
         .await
         .wrap_err("Failed to update user in database")
         .with_status_code(StatusCode::UNPROCESSABLE_ENTITY)?;
+
+    kafka_state
+        .producer
+        .send(
+            FutureRecord::<[u8], _>::to(kafka_state.user_topic.deref())
+                .payload(
+                    &postcard::to_stdvec(&KafkaMessage::UserInformationChanged(user.clone()))
+                        .wrap_err("Failed to serialize user message")
+                        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?,
+                )
+                .headers(global::get_text_map_propagator(|propagator| {
+                    let mut headers = OwnedHeaders::new();
+                    propagator.inject(&mut KafkaOwnedHeaderCarrier::new(&mut headers));
+                    headers
+                })),
+            Duration::from_secs(0),
+        )
+        .await
+        .map_err(|e| e.0)
+        .wrap_err("Failed to send user message to kafka")
+        .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let encoded = jsonwebtoken::encode(
         JWT_HEADER

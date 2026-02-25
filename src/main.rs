@@ -246,9 +246,12 @@ struct KafkaConfig {
     #[clap(long, env = "KAFKA_BROKERS")]
     #[serde(default)]
     brokers: String,
-    #[clap(long, env = "KAFKA_EMAIL_TOPIC")]
+    #[clap(long, env = "KAFKA_USER_TOPIC")]
     #[serde(default)]
-    email_topic: Arc<str>,
+    user_topic: Arc<str>,
+    #[clap(long, env = "KAFKA_OFFER_TOPIC")]
+    #[serde(default)]
+    offer_topic: Arc<str>,
     #[clap(long, env = "KAFKA_RETRIER")]
     #[serde(default)]
     retrier: bool,
@@ -300,14 +303,16 @@ impl Default for Cli {
 
 #[derive(Clone)]
 pub struct KafkaState {
-    pub email_topic: Arc<str>,
+    pub user_topic: Arc<str>,
+    pub offer_topic: Arc<str>,
     pub producer: FutureProducer,
 }
 
 impl Debug for KafkaState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KafkaState")
-            .field("email_topic", &self.email_topic)
+            .field("user_topic", &self.user_topic)
+            .field("offer_topic", &self.offer_topic)
             .finish_non_exhaustive()
     }
 }
@@ -528,11 +533,19 @@ async fn main() -> eyre::Result<()> {
 
     let shutdown_signal = shutdown_signal();
 
+    let kafka_state = KafkaState {
+        user_topic: Arc::clone(&config.kafka.user_topic),
+        offer_topic: Arc::clone(&config.kafka.offer_topic),
+        producer: kafka_config
+            .create()
+            .wrap_err("Failed to create Kafka producer")?,
+    };
+
     match config.service.service_type {
         ServiceType::Email => {
             if config.kafka.retrier {
                 kafka::retrier(
-                    &config.kafka.email_topic,
+                    kafka_state,
                     config.service.service_type,
                     &config.kafka.retry_wait_mins,
                     kafka_config,
@@ -542,7 +555,7 @@ async fn main() -> eyre::Result<()> {
                 .await?;
             } else {
                 kafka::run(
-                    &config.kafka.email_topic,
+                    kafka_state,
                     config.service.service_type,
                     kafka_config,
                     &kafka_tracer,
@@ -662,12 +675,7 @@ async fn main() -> eyre::Result<()> {
                     reqwest_client,
                     encoding_key,
                     decoding_keys,
-                    kafka_state: KafkaState {
-                        email_topic: Arc::clone(&config.kafka.email_topic),
-                        producer: kafka_config
-                            .create()
-                            .wrap_err("Failed to create Kafka producer")?,
-                    },
+                    kafka_state,
                 });
 
             let listener = TcpListener::bind(config.addr)
